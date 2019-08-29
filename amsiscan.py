@@ -1,48 +1,27 @@
 #!/usr/bin/env python
 
-__description__ = 'This is essentialy a wrapper for the struct module'
+from __future__ import print_function
+
+__description__ = 'Scan input with AmsiScanBuffer'
 __author__ = 'Didier Stevens'
-__version__ = '0.0.9'
-__date__ = '2019/07/15'
+__version__ = '0.0.1'
+__date__ = '2019/06/12'
 
 """
-Source code put in public domain by Didier Stevens, no Copyright
+Source code put in the public domain by Didier Stevens, no Copyright
 https://DidierStevens.com
 Use at your own risk
 
 History:
-  2016/12/03: start
-  2017/06/16: refactoring to cBinaryFile
-  2017/07/11: added CutData
-  2017/11/04: 0.0.2 refactoring; continued; added options -c & -s
-  2017/11/18: added option -f
-  2017/12/01: updated FilenameCheckHash to handle empty file: #
-  2017/12/10: added manual
-  2017/12/16: 0.0.3 added epoch to option -f
-  2017/12/16: 0.0.4 added representation to option -f
-  2017/12/17: continue
-  2018/01/02: added extra info for strings when option -f is used
-  2018/01/15: tweaking string output when option -f is used
-  2018/01/19: updated man
-  2018/02/15: 0.0.5 added remainder for option -f
-  2018/02/18: added option -j
-  2018/02/19: changed option -j to --jsoninput
-  2018/02/23: added * remainder to option -f
-  2018/02/24: updated man
-  2018/02/26: changed options -c and -s to -C and -S, added options -s -a -x -d, updated man
-  2018/03/05: updated #e# expressions
-  2018/06/12: updated man
-  2018/06/17: added property extracted to cBinaryFile
-  2018/07/21: updated CheckJSON
-  2018/10/28: 0.0.6 added option -n
-  2018/11/09: 0.0.7 added X and S representation for strings; option -A
-  2018/12/08: updated ParseCutArgument; added selection warning
-  2019/03/22: 0.0.8 added -F option
-  2019/03/25: added library & -f name= ; added select remainder (-s r)
-  2019/04/18: added FiletimeUTC; added support for annotations to library files
-  2019/07/15: 0.0.9 added tlv format parsing
+  2019/04/21: start
+  2019/04/23: continue
+  2019/04/26: continue
+  2019/04/27: continue
+  2019/06/02: refactor
+  2019/06/12: refactor, man page, Python 3
 
 Todo:
+  Document flag arguments in man page
 """
 
 import optparse
@@ -59,10 +38,12 @@ import re
 import struct
 import string
 import math
-import time
-import hashlib
+import fnmatch
 import json
-import datetime
+import time
+import operator
+import ctypes
+import ctypes.wintypes
 if sys.version_info[0] >= 3:
     from io import BytesIO as DataIO
 else:
@@ -76,220 +57,23 @@ def PrintManual():
     manual = r'''
 Manual:
 
-This tool is essentialy a wrapper for the Python module struct.
+This tool uses Windows 10's AmsiScanBuffer function to scan input for malware.
 
-It reads one or more files or stdin and parses the content according to different formats. This tool is very versatile when it comes to handling files, later full details will be provided.
+It reads one or more files or stdin. This tool is very versatile when it comes to handling files, later full details will be provided.
 
 This Python script was developed with Python 2.7 and tested with Python 2.7 and 3.5.
 
-Example:
+The AmsiScanBuffer function returns 5 possible values when it is called for a scan:
 
-format-bytes.py random.bin
-File: random.bin
-s:signed u:unsigned l:little-endian b:big-endian m:mixed-endian
-1I: s -69 u 187
-2I: sl 26043 ul 26043 sb -17563 ub 47973
-4I: sl 881419707 ul 881419707 sb -1150973644 ub 3143993652
-4F: l 0.000000 b -0.003502
-4N: b 187.101.137.52 l 52.137.101.187
-4E: l 1997/12/06 14:48:27 b 2069/08/17 19:34:12
-8I: sl -3535861847371979333 ul 14910882226337572283 sb -4943394157892145458 ub 13503349915817406158
-8T: ul N/A ub N/A
-8F: l -1661678170725283018588028971660576297715302893638508902075603349019820032.000000 b -0.000000
-16G: b BB658934-6218-EECE-3AC3-179F6B7428FB m {348965BB-1862-CEEE-3AC3-179F6B7428FB}
-
-By default, format-bytes.py reads the first 16 bytes (if available) of the file(s) provided as argument, and parses these bytes as:
- Integer: I
- Float: F
- IPv4 address: N
- epoch: E
- FILETIME: T
- GUID: G
-
-1I is a 8-bit integer, 2I is a 16-bit integer, ...
-
-Bytes are interpreted in little-endian (l), big-endian (b) and mixed-endian (m) format. Mixed-endian is only used for GUIDs (G).
-Integers can be signed (s) or unsigned (u).
-
-Use option -f to specify how bytes should be parsed: this option takes a Python struct format string.
-Example:
-
-format-bytes.py -f "<hib" random.bin
-File: random.bin
- 1:    <type 'int'>      26043       65bb  1970/01/01 07:14:03
- 2:    <type 'int'>  409089161   18623489  1982/12/18 19:52:41
- 3:    <type 'int'>        -18        -12
-
-String lengths can also be specified in hexadecimal by using prefix 0x. For example, 16s, a 16 character long string, can also be specified as 0x10s in hexadecimal.
-
-End the format string with character * to display remaining bytes.
-Example:
-
-format-bytes.py -f "<hib*" random.bin
-File: random.bin
- 1:    <type 'int'>      26043       65bb  1970/01/01 07:14:03
- 2:    <type 'int'>  409089161   18623489  1982/12/18 19:52:41
- 3:    <type 'int'>        -18        -12
-Remainder: 9
-00000000: CE 3A C3 17 9F 6B 74 28  FB                       .:...kt(.
-
-1I: s -50 u 206
-2I: sl 15054 ul 15054 sb -12742 ub 52794
-4I: sl 398670542 ul 398670542 sb -835009769 ub 3459957527
-4F: l 0.000000 b -783336896.000000
-4N: b 206.58.195.23 l 23.195.58.206
-4E: l 1982/08/20 05:49:02 b 2079/08/22 19:18:47
-8I: sl 2915073189858196174 ul 2915073189858196174 sb -3586339647020895192 ub 14860404426688656424
-8T: ul N/A ub N/A
-8F: l 0.000000 b -721504228050136948830706706079286975060186906491372824967789492043776.000000
-
-You can also specify how the parsed bytes should be represented. To achieve this, append a double colon character (:) to the format string followed by a representation character for each member.
-Valid representation characters are X (for hexadecimal), I (for integer), E (for epoch), T (for FILETIME) and S (for string with escaped characters).
-Example:
-
-C:\Demo>format-bytes.py -f "<hib*:XEI" random.bin
-File: random.bin
- 1:    <type 'int'>       65bb
- 2:    <type 'int'> 1982/12/18 19:52:41
- 3:    <type 'int'>        -18
-Remainder: 9
-00000000: CE 3A C3 17 9F 6B 74 28  FB                       .:...kt(.
-
-1I: s -50 u 206
-2I: sl 15054 ul 15054 sb -12742 ub 52794
-4I: sl 398670542 ul 398670542 sb -835009769 ub 3459957527
-4F: l 0.000000 b -783336896.000000
-4N: b 206.58.195.23 l 23.195.58.206
-4E: l 1982/08/20 05:49:02 b 2079/08/22 19:18:47
-8I: sl 2915073189858196174 ul 2915073189858196174 sb -3586339647020895192 ub 14860404426688656424
-8T: ul N/A ub N/A
-8F: l 0.000000 b -721504228050136948830706706079286975060186906491372824967789492043776.000000
-
-For strings, the output will include string length, ASCII representation of the string (first 10 bytes), hexadecimal representation (first 10 bytes), entropy and MD5 hash.
-
-C:\Demo>format-bytes.py -f "<h14s" random.bin
-File: random.bin
- 1:    <type 'int'>      26043       65bb  1970/01/01 07:14:03
- 2:    <type 'str'>         14 .4b...:... 89346218eece3ac3179f 3.807355 e1647bd9711cdfee7959dee4ff956590
-
-Strings can be selected with option -s for dumping. Default is ASCII dump (-a), but run-length encoded ASCII (-A), hexadecimal (-x) and binary (-d) dump is available too.
-The remainder can also be selected: -s r.
-
-Annotations can be added to particular members, using option -n. Like in this example:
-
-C:\Demo>format-bytes.py -f "<hib*:XEI" -n "2: Creation date 3: Temperature" random.bin
-File: random.bin
- 1:    <type 'int'>       65bb
- 2:    <type 'int'> 1982/12/18 19:52:41 Creation date
- 3:    <type 'int'>        -18 Temperature
-Remainder: 9
-00000000: CE 3A C3 17 9F 6B 74 28  FB                       .:...kt(.
-
-1I: s -50 u 206
-2I: sl 15054 ul 15054 sb -12742 ub 52794
-4I: sl 398670542 ul 398670542 sb -835009769 ub 3459957527
-4F: l 0.000000 b -783336896.000000
-4N: b 206.58.195.23 l 23.195.58.206
-4E: l 1982/08/20 05:49:02 b 2079/08/22 19:18:47
-8I: sl 2915073189858196174 ul 2915073189858196174 sb -3586339647020895192 ub 14860404426688656424
-8T: ul N/A ub N/A
-8F: l 0.000000 b -721504228050136948830706706079286975060186906491372824967789492043776.000000
-
-This tool can also parse TLV records (Type, Length Value). To achieve this, start the format specifier with tlv= and provide values for format (f:), type (t:) and length (l:) separated by a comma (,).
-Like this example:
-
-C:\Demo>format-bytes.py -f "tlv=f:<III,t:0,l:2" registry.blob.bin
-File: registry.blob.bin
- 1:     0x59    18 'R\x00S\x00A\x00/\x00S\x00H\x00A\x001\x0
- 2:     0x0f    20 'N\x94\xf8r\xf8\x02D\x1e-\x1c\x86\xc4\x0
- 3:     0x14    20 'F\xcc\x93\x96\xe7\x14k\xaaW\xc7\xc3\r8\
- 4:     0x02   188 '\x1c\x00\x00\x00\\\x00\x00\x00\x0c\x00\
- 5:     0x03    20 "\x1c\x9c\xa83\x865\xf1}B\xe4\x1b\x90RH'
- 6:     0x04    16 "\x86\xae\xa6J'\x19\xc5\xa0\x05\x8a7\x93
- 7:     0x19    16 "\xa5\x9d~\x05\x03';\x01\x90\xd7fF\xbdd\
- 8:     0x20   735 '0\x82\x02\xdb0\x82\x01\xc3\xa0\x03\x02\
-
-This command parses the binary blob of a certificate found inside the Windows registry. Each record consists of 3 little-endian 32-bit integers (<III) followed by data. The first integer (index 0), the PropID, is the type (t:0) and the third integer (index 2) is the length (l:2). This is the length of the value (data).
-
-Format strings can be stored inside a library file. A library file has the name of the program (format-bytes) and extension .library. Library files can be placed in the same directory as the program, and/or the current directory.
-A library file is a text file. Each format string has a name and takes one line: name=formatstring.
+AMSI_RESULT_CLEAN
+AMSI_RESULT_NOT_DETECTED
+AMSI_RESULT_BLOCKED_BY_ADMIN_START
+AMSI_RESULT_BLOCKED_BY_ADMIN_END
+AMSI_RESULT_DETECTED
 
 Example:
-eqn=<HIHIIIIIBBBBBBBBBB40sIIBB*:XXXXXXXXXXXXXXXXXXsXXXX
-
-This defines format string eqn. It can be retrieved with option -f name=eqn.
-This format string can be followed by annotations (use a space character to separate the format string and the annotations):
-
-Example:
-eqn=<HIHIIIIIBBBBBBBBBB40sIIBB*:XXXXXXXXXXXXXXXXXXsXXXX 1: size of EQNOLEFILEHDR 9: Start MTEF header 14: Full size record 15: Line record 16: Font record 19: Shellcode (fontname)
-
-A line in a library file that starts with # is a comment and is ignored.
-
-FYI, Python struct module format characters are:
-
-Character Byte order
---------------------
-@         native
-=         native
-<         little-endian
->         big-endian
-!         network (= big-endian)
-
-Format  C Type              Standard size
------------------------------------------
-x       pad byte
-c       char                1
-b       signed              1
-B       unsigned char       1
-?       _Bool               1
-h       short               2
-H       unsigned short      2
-i       int                 4
-I       unsigned int        4
-l       long                4
-L       unsigned long       4
-q       long long           8
-Q       unsigned long long  8
-f       float               4
-d       double              8
-s       char[]
-p       char[]
-P       void *
-
-To parse a repeating sequence of bytes, use options --count (to specify the number of repetitions) and --step (to specify the number bytes between repeats).
-Example:
-
-format-bytes.py -C 2 -S 4 random.bin
-File: random.bin
-s:signed u:unsigned l:little-endian b:big-endian m:mixed-endian
-00 1I: s -69 u 187
-00 2I: sl 26043 ul 26043 sb -17563 ub 47973
-00 4I: sl 881419707 ul 881419707 sb -1150973644 ub 3143993652
-00 4F: l 0.000000 b -0.003502
-00 4N: b 187.101.137.52 l 52.137.101.187
-00 4E: l 1997/12/06 14:48:27 b 2069/08/17 19:34:12
-00 8I: sl -3535861847371979333 ul 14910882226337572283 sb -4943394157892145458 ub 13503349915817406158
-00 8T: ul N/A ub N/A
-00 8F: l -1661678170725283018588028971660576297715302893638508902075603349019820032.000000 b -0.000000
-00 16G: b BB658934-6218-EECE-3AC3-179F6B7428FB m {348965BB-1862-CEEE-3AC3-179F6B7428FB}
-04 1I: s 98 u 98
-04 2I: sl 6242 ul 6242 sb 25112 ub 25112
-04 4I: sl -823256990 ul 3471710306 sb 1645801166 ub 1645801166
-04 4F: l -1997287680.000000 b 705278197607520272384.000000
-04 4N: b 98.24.238.206 l 206.238.24.98
-04 4E: l 2080/01/05 19:58:26 b 2022/02/25 14:59:26
-04 8I: sl -6982898039867434910 ul 11463846033842116706 sb 7068662184674531231 ub 7068662184674531231
-04 8T: ul N/A ub N/A
-04 8F: l -0.000000 b 358946151129582029215291849393230786808315346836706673156033999581834828933214436444158528577134449241373022018959436034143150814561128186558682352782632064229834752.000000
-04 16G: b 6218EECE-3AC3-179F-6B74-28FBEB2AD62A m {CEEE1862-C33A-9F17-6B74-28FBEB2AD62A}
-
-To search for a value inside the provided file(s), use option -F. For the moment, only integers can be searched. Start the option value with #i# followed by the decimal number to search for.
-Example:
-
-format-bytes.py -F #i#6083 random.bin
-File: random.bin
-0x00000009 <h 0xc317
-0x00000009 <H 0xc317
+C:\Demo>amsiscan.py eicar.vir
+eicar.vir: AMSI_RESULT_DETECTED
 
 
 As stated at the beginning of this manual, this tool is very versatile when it comes to handling files. This will be explained now.
@@ -301,10 +85,6 @@ If no file arguments are provided to this tool, it will read data from standard 
 
 oledump.py -s 4 -d sample.doc.vir | tool.py
 
-This tool can process JSON output from other tools using option --jsoninput:
-
-oledump.py --json sample.doc.vir | tool.py --jsoninput
-
 When one or more file arguments are provided to this tool, it will read the files and process the content.
 How the files are read, depends on the type of file arguments that are provided. File arguments that start with character @ or # have special meaning, and will be explained later.
 
@@ -312,7 +92,7 @@ If a file argument does not start with @ or #, it is considered to be a file on 
 If the file is not a compressed file, the binary content of the file is read from disk for processing.
 Compressed files are solely recognized based on their extension: .zip and .gz.
 If a file argument with extension .gz is provided, the tool will decompress the gzip file in memory and process the decompressed content. No checks are made to ensure that the file with extension .gz is an actual gzip compressed file.
-If a file argument with extension .zip is provided, the tool will extract the first file (or only file) from the ZIP file in memory and process the decompressed content. No checks are made to ensure that the file with extension .zip is an actual ZIP compressed file.
+If a file argument with extension .zip is provided and it contains a single file, the tool will extract the file from the ZIP file in memory and process the decompressed content. No checks are made to ensure that the file with extension .zip is an actual ZIP compressed file.
 Password protected ZIP files can be processed too. The tool uses password 'infected' (without quotes) as default password. A different password can be provided using option --password.
 
 Example:
@@ -341,10 +121,13 @@ tool.py C:\Windows\*.exe C:\Windows\*.dll
 
 To prevent the tool from processing file arguments with wildcard characters or special initial characters (@ and #) differently, but to process them as normal files, use option --literalfilenames.
 
+The content of folders can be processed too: use option --recursedir and provide folder names as argument. Wildcards and here files (for folder names) can be used too.
+
 File arguments that start with character # have special meaning. These are not processed as actual files on disk (except when option --literalfilenames is used), but as file arguments that specify how to "generate" the file content.
 
 File arguments that start with #, #h#, #b# or #e# are used to "generate" the file content.
 Arguments that start with #c# are not file arguments, but cut operators (explained later).
+Arguments that start with #f# are not file arguments, but flags (explained later).
 
 Generating the file content with a # file argument means that the file content is not read from disk, but generated in memory based on the characteristics provided via the file argument.
 
@@ -428,19 +211,73 @@ termB can also be a negative number (decimal or hexademical): in that case the p
 If termB is a string to search for, then the cut section of bytes ends with the last byte at the position where the string is first found. If the string is not found, the cut is empty (0 bytes).
 No checks are made to assure that the position specified by termA is lower than the position specified by termB. This is left up to the user.
 Search string expressions (ASCII and hexadecimal) can be followed by an instance (a number equal to 1 or greater) to indicate which instance needs to be taken. For example, ['ABC']2 will search for the second instance of string 'ABC'. If this instance is not found, then nothing is selected.
-Search string expressions (ASCII and hexadecimal) can be followed by an offset (+ or - a number) to add (or substract) an offset to the found instance. For example, ['ABC']+3 will search for the first instance of string 'ABC' and then select the bytes after ABC (+ 3).
+Search string expressions (ASCII and hexadecimal) can be followed by an offset (+ or - a number) to add (or substract) an offset to the found instance. This number can be a decimal or hexadecimal (prefix 0x) value. For example, ['ABC']+3 will search for the first instance of string 'ABC' and then select the bytes after ABC (+ 3).
 Finally, search string expressions (ASCII and hexadecimal) can be followed by an instance and an offset.
 Examples:
 This cut-expression can be used to dump the first 256 bytes of a PE file located inside the file content: ['MZ']:0x100l
 This cut-expression can be used to dump the OLE file located inside the file content: [d0cf11e0]:
 
+A flag argument starts with #f# and is passed on for all files that are provided after the flag argument. It can be used to change the behavior of the tool for certain files.
+Example:
+
+tool.py data-1.bin #f#-l data-2.bin
+
+data-2.bin will be processed differently (using flag option -l) than file data-1.bin.
+
+With option --jsoninput, the tool will parse the output produced by another tool using option --jsonoutput.
+Example:
+zipdump.py --jsonoutput Book1.xlsm | file-magic.py --jsoninput
+[Content_Types].xml XML 1.0 document, ASCII text, with very long lines, with CRLF line terminators
+_rels/.rels XML 1.0 document, ASCII text, with very long lines, with CRLF line terminators
+xl/_rels/workbook.xml.rels  XML 1.0 document, ASCII text, with very long lines, with CRLF line terminators
+xl/workbook.xml XML 1.0 document, ASCII text, with very long lines, with CRLF line terminators
+xl/drawings/drawing1.xml  XML 1.0 document, ASCII text, with very long lines, with CRLF line terminators
+xl/worksheets/_rels/sheet1.xml.rels XML 1.0 document, ASCII text, with very long lines, with CRLF line terminators
+xl/theme/theme1.xml XML 1.0 document, UTF-8 Unicode text, with very long lines, with CRLF line terminators
+xl/styles.xml XML 1.0 document, ASCII text, with very long lines, with CRLF line terminators
+xl/worksheets/sheet1.xml  XML 1.0 document, ASCII text, with very long lines, with CRLF line terminators
+xl/vbaProject.bin Composite Document File V2 Document, Cannot read section info
+xl/drawings/vmlDrawing1.vml ASCII text, with CRLF line terminators
+docProps/app.xml  XML 1.0 document, ASCII text, with very long lines, with CRLF line terminators
+xl/ctrlProps/ctrlProp1.xml  XML 1.0 document, ASCII text, with CRLF line terminators
+docProps/core.xml XML 1.0 document, ASCII text, with very long lines, with CRLF line terminators
+
+In this example, zipdump is used to produce JSON data with the content of each file contained inside file Book1.xlsm (a ZIP container), which is then consumed by file-magic.py to identify (libmagic) the type of each file.
+
+With option --ignoreprocessingerrors, the tool will continue processing the next file when an error occurs while processing the current file. Files that can not be opened will always be skipped to move to the next file.
+
+Option --logfile direct the tool to create a logfile, and option --logcomment can be used to add a comment to the log file. The log file will contain metadata and a list of processed files, it does not contain processing results.
+It is best to use this option when option --ignoreprocessingerrors is used, to have a record of file processing errors.
+
+The lines are written to standard output, except when option -o is used. When option -o is used, the lines are written to the filename specified by option -o.
+Filenames used with option -o starting with # have special meaning.
+#c#example.txt will write output both to the console (stdout) and file example.txt.
+#g# will write output to a file with a filename generated by the tool like this: toolname-date-time.txt.
+#g#KEYWORD will write output to a file with a filename generated by the tool like this: toolname-KEYWORD-date-time.txt.
+Use #p#filename to display execution progress.
+To process several files while creating seperate output files for each input file, use -o #s#%f%.result *.
+This will create output files with the name of the inputfile and extension .result.
+There are several variables available when creating separate output files:
+ %f% is the full filename (with directory if present)
+ %b% is the base name: the filename without directory
+ %d% is the directory
+ %r% is the root: the filename without extension
+ %ru% is the root made unique by appending a counter (if necessary)
+ %e% is the extension
+#h# is like the head command: only the first 10 lines will be outputed.
+#t# is like the tail command: only the last 10 lines will be outputed.
+Most options can be combined, like #ps# for example.
+#l# is used for literal filenames: if the output filename has to start with # (#example.txt for example), use filename #l##example.txt for example.
+
 '''
     for line in manual.split('\n'):
         print(textwrap.fill(line, 79))
 
-LIBRARY_EXTENSION = '.library'
+DEFAULT_SEPARATOR = ','
+QUOTE = '"'
 
-dLibrary = {}
+def PrintError(*args, **kwargs):
+    print(*args, file=sys.stderr, **kwargs)
 
 #Convert 2 Bytes If Python 3
 def C2BIP3(string):
@@ -470,25 +307,7 @@ def IFF(expression, valueTrue, valueFalse):
     else:
         return CIC(valueFalse)
 
-def RINSub(data, specialcharacters=''):
-    if specialcharacters != '':
-        for specialcharacter in specialcharacters:
-            if specialcharacter in data:
-                return repr(data)
-        return data
-    elif "'" + data + "'" == repr(data):
-        return data
-    else:
-        return repr(data)
-
-# RIN: Repr If Needed
-def RIN(data, specialcharacters=''):
-    if type(data) == list:
-        return [RINSub(item, specialcharacters) for item in data]
-    else:
-        return RINSub(data, specialcharacters)
-
-#----------------------------------------------------------------------------------------------------
+#-BEGINCODE cBinaryFile------------------------------------------------------------------------------
 #import random
 #import binascii
 #import zipfile
@@ -752,7 +571,10 @@ def Interpret(expression):
                 number2 = CheckNumber(arguments[1], minimum=1, maximum=255)
                 if number2 == None:
                     return None
-                decoded += ''.join([chr(n) for n in range(number, number2 + 1)])
+                if number < number2:
+                    decoded += ''.join([chr(n) for n in range(number, number2 + 1)])
+                else:
+                    decoded += ''.join([chr(n) for n in range(number, number2 - 1, -1)])
         else:
             print('Error: unknown function: %s' % functionname)
             return None
@@ -787,47 +609,62 @@ def FilenameCheckHash(filename, literalfilename):
     else:
         return FCH_FILENAME, filename
 
+def AnalyzeFileError(filename):
+    PrintError('Error opening file %s' % filename)
+    PrintError(sys.exc_info()[1])
+    try:
+        if not os.path.exists(filename):
+            PrintError('The file does not exist')
+        elif os.path.isdir(filename):
+            PrintError('The file is a directory')
+        elif not os.path.isfile(filename):
+            PrintError('The file is not a regular file')
+    except:
+        pass
+
 class cBinaryFile:
-    def __init__(self, filename, zippassword='infected', noextraction=False, literalfilename=False, content=None):
+    def __init__(self, filename, zippassword='infected', noextraction=False, literalfilename=False):
         self.filename = filename
         self.zippassword = zippassword
         self.noextraction = noextraction
         self.literalfilename = literalfilename
         self.oZipfile = None
         self.extracted = False
-
-        if content != None:
-            self.fIn = DataIO(content)
-            return
+        self.fIn = None
 
         fch, data = FilenameCheckHash(self.filename, self.literalfilename)
         if fch == FCH_ERROR:
-            raise Exception('Error %s parsing filename: %s' % (data, self.filename))
+            line = 'Error %s parsing filename: %s' % (data, self.filename)
+            raise Exception(line)
 
-        if self.filename == '':
-            if sys.platform == 'win32':
-                import msvcrt
-                msvcrt.setmode(sys.stdin.fileno(), os.O_BINARY)
-            self.fIn = sys.stdin
-        elif fch == FCH_DATA:
-            self.fIn = DataIO(data)
-        elif not self.noextraction and self.filename.lower().endswith('.zip'):
-            self.oZipfile = zipfile.ZipFile(self.filename, 'r')
-            if len(self.oZipfile.infolist()) == 1:
-                self.fIn = self.oZipfile.open(self.oZipfile.infolist()[0], 'r', self.zippassword)
+        try:
+            if self.filename == '':
+                if sys.platform == 'win32':
+                    import msvcrt
+                    msvcrt.setmode(sys.stdin.fileno(), os.O_BINARY)
+                self.fIn = sys.stdin
+            elif fch == FCH_DATA:
+                self.fIn = DataIO(data)
+            elif not self.noextraction and self.filename.lower().endswith('.zip'):
+                self.oZipfile = zipfile.ZipFile(self.filename, 'r')
+                if len(self.oZipfile.infolist()) == 1:
+                    self.fIn = self.oZipfile.open(self.oZipfile.infolist()[0], 'r', self.zippassword)
+                    self.extracted = True
+                else:
+                    self.oZipfile.close()
+                    self.oZipfile = None
+                    self.fIn = open(self.filename, 'rb')
+            elif not self.noextraction and self.filename.lower().endswith('.gz'):
+                self.fIn = gzip.GzipFile(self.filename, 'rb')
                 self.extracted = True
             else:
-                self.oZipfile.close()
-                self.oZipfile = None
                 self.fIn = open(self.filename, 'rb')
-        elif not self.noextraction and self.filename.lower().endswith('.gz'):
-            self.fIn = gzip.GzipFile(self.filename, 'rb')
-            self.extracted = True
-        else:
-            self.fIn = open(self.filename, 'rb')
+        except:
+            AnalyzeFileError(self.filename)
+            raise
 
     def close(self):
-        if self.fIn != sys.stdin:
+        if self.fIn != sys.stdin and self.fIn != None:
             self.fIn.close()
         if self.oZipfile != None:
             self.oZipfile.close()
@@ -847,7 +684,7 @@ class cBinaryFile:
         self.close()
         return data
 
-#----------------------------------------------------------------------------------------------------
+#-ENDCODE cBinaryFile--------------------------------------------------------------------------------
 
 def File2Strings(filename):
     try:
@@ -864,6 +701,18 @@ def File2Strings(filename):
     finally:
         if f != sys.stdin:
             f.close()
+
+def File2String(filename):
+    try:
+        f = open(filename, 'rb')
+    except:
+        return None
+    try:
+        return f.read()
+    except:
+        return None
+    finally:
+        f.close()
 
 def ProcessAt(argument):
     if argument.startswith('@'):
@@ -882,22 +731,99 @@ def Glob(filename):
     else:
         return filenames
 
-def ExpandFilenameArguments(filenames, literalfilenames=False):
-    if len(filenames) == 0:
-        return [['', '']]
-    elif literalfilenames:
-        return [[filename, ''] for filename in filenames]
-    else:
-        cutexpression = ''
-        result = []
-        for filename in list(collections.OrderedDict.fromkeys(sum(map(Glob, sum(map(ProcessAt, filenames), [])), []))):
-            if filename.startswith('#c#'):
-                cutexpression = filename[3:]
+class cExpandFilenameArguments():
+    def __init__(self, filenames, literalfilenames=False, recursedir=False, checkfilenames=False, expressionprefix=None, flagprefix=None):
+        self.containsUnixShellStyleWildcards = False
+        self.warning = False
+        self.message = ''
+        self.filenameexpressionsflags = []
+        self.expressionprefix = expressionprefix
+        self.flagprefix = flagprefix
+        self.literalfilenames = literalfilenames
+
+        expression = ''
+        flag = ''
+        if len(filenames) == 0:
+            self.filenameexpressionsflags = [['', '', '']]
+        elif literalfilenames:
+            self.filenameexpressionsflags = [[filename, '', ''] for filename in filenames]
+        elif recursedir:
+            for dirwildcard in filenames:
+                if expressionprefix != None and dirwildcard.startswith(expressionprefix):
+                    expression = dirwildcard[len(expressionprefix):]
+                elif flagprefix != None and dirwildcard.startswith(flagprefix):
+                    flag = dirwildcard[len(flagprefix):]
+                else:
+                    if dirwildcard.startswith('@'):
+                        for filename in ProcessAt(dirwildcard):
+                            self.filenameexpressionsflags.append([filename, expression, flag])
+                    elif os.path.isfile(dirwildcard):
+                        self.filenameexpressionsflags.append([dirwildcard, expression, flag])
+                    else:
+                        if os.path.isdir(dirwildcard):
+                            dirname = dirwildcard
+                            basename = '*'
+                        else:
+                            dirname, basename = os.path.split(dirwildcard)
+                            if dirname == '':
+                                dirname = '.'
+                        for path, dirs, files in os.walk(dirname):
+                            for filename in fnmatch.filter(files, basename):
+                                self.filenameexpressionsflags.append([os.path.join(path, filename), expression, flag])
+        else:
+            for filename in list(collections.OrderedDict.fromkeys(sum(map(self.Glob, sum(map(ProcessAt, filenames), [])), []))):
+                if expressionprefix != None and filename.startswith(expressionprefix):
+                    expression = filename[len(expressionprefix):]
+                elif flagprefix != None and filename.startswith(flagprefix):
+                    flag = filename[len(flagprefix):]
+                else:
+                    self.filenameexpressionsflags.append([filename, expression, flag])
+            self.warning = self.containsUnixShellStyleWildcards and len(self.filenameexpressionsflags) == 0
+            if self.warning:
+                self.message = "Your filename argument(s) contain Unix shell-style wildcards, but no files were matched.\nCheck your wildcard patterns or use option literalfilenames if you don't want wildcard pattern matching."
+                return
+        if self.filenameexpressionsflags == [] and (expression != '' or flag != ''):
+            self.filenameexpressionsflags = [['', expression, flag]]
+        if checkfilenames:
+            self.CheckIfFilesAreValid()
+
+    def Glob(self, filename):
+        if not ('?' in filename or '*' in filename or ('[' in filename and ']' in filename)):
+            return [filename]
+        self.containsUnixShellStyleWildcards = True
+        return glob.glob(filename)
+
+    def CheckIfFilesAreValid(self):
+        valid = []
+        doesnotexist = []
+        isnotafile = []
+        for filename, expression, flag in self.filenameexpressionsflags:
+            hashfile = False
+            try:
+                hashfile = FilenameCheckHash(filename, self.literalfilenames)[0] == FCH_DATA
+            except:
+                pass
+            if filename == '' or hashfile:
+                valid.append([filename, expression, flag])
+            elif not os.path.exists(filename):
+                doesnotexist.append(filename)
+            elif not os.path.isfile(filename):
+                isnotafile.append(filename)
             else:
-                result.append([filename, cutexpression])
-        if result == []:
-            return [['', cutexpression]]
-        return result
+                valid.append([filename, expression, flag])
+        self.filenameexpressionsflags = valid
+        if len(doesnotexist) > 0:
+            self.warning = True
+            self.message += 'The following files do not exist and will be skipped: ' + ' '.join(doesnotexist) + '\n'
+        if len(isnotafile) > 0:
+            self.warning = True
+            self.message += 'The following files are not regular files and will be skipped: ' + ' '.join(isnotafile) + '\n'
+
+    def Filenames(self):
+        if self.expressionprefix == None:
+            return [filename for filename, expression, flag in self.filenameexpressionsflags]
+        else:
+            return self.filenameexpressionsflags
 
 def CheckJSON(stringJSON):
     try:
@@ -942,23 +868,6 @@ def CheckJSON(stringJSON):
     for item in object['items']:
         item['content'] = binascii.a2b_base64(item['content'])
     return object['items']
-
-def GenerateFileList(args, options):
-    if len(args) > 0 and options.jsoninput:
-        print('Error: option -j can not be used with files')
-        return None
-
-    result = []
-    if options.jsoninput:
-        items = CheckJSON(sys.stdin.read())
-        if items == None:
-            return None
-        for item in items:
-            result.append((item['name'], '', item['content']))
-    else:
-        for filename, cutexpression in ExpandFilenameArguments(args, options.literalfilenames):
-            result.append((filename, cutexpression, None))
-    return result
 
 CUTTERM_NOTHING = 0
 CUTTERM_POSITION = 1
@@ -1095,191 +1004,6 @@ def CutData(stream, cutArgument):
 
     return stream[positionBegin:positionEnd]
 
-def Timestamp2StringLog(stime):
-    return '%04d%02d%02d-%02d%02d%02d' % stime[0:6]
-
-def Timestamp2StringHuman(stime):
-    return '%04d/%02d/%02d %02d:%02d:%02d' % stime[0:6]
-
-def TimestampLocal(epoch=None):
-    if epoch == None:
-        return Timestamp2StringHuman(time.localtime())
-    else:
-        return Timestamp2StringHuman(time.localtime(epoch))
-
-def TimestampUTC(epoch=None):
-    if epoch == None:
-        return Timestamp2StringHuman(time.gmtime())
-    else:
-        return Timestamp2StringHuman(time.gmtime(epoch))
-
-def FiletimeUTC(value):
-    try:
-        return '%s.%07d' % (datetime.datetime.utcfromtimestamp((value - 116444736000000000) / 10000000).strftime("%Y/%m/%d %H:%M:%S"), (value - 116444736000000000) % 10000000)
-    except ValueError:
-        return 'N/A'
-
-def FormatBytesData(data, position, options):
-    if len(data) == 0:
-        return
-    bytes = [C2IIP2(d) for d in data]
-
-    if position < 0:
-        prefix = ''
-    else:
-        prefix = '%02X ' % position
-
-    print(prefix + '1I: s %d u %d' % (struct.unpack('b', data[0:1])[0], struct.unpack('B', data[0:1])[0]))
-
-    if len(data) < 2:
-        return
-    print(prefix + '2I: sl %d ul %d sb %d ub %d' % (struct.unpack('<h', data[0:2])[0], struct.unpack('<H', data[0:2])[0], struct.unpack('>h', data[0:2])[0], struct.unpack('>H', data[0:2])[0]))
-
-    if len(data) < 4:
-        return
-    print(prefix + '4I: sl %d ul %d sb %d ub %d' % (struct.unpack('<i', data[0:4])[0], struct.unpack('<I', data[0:4])[0], struct.unpack('>i', data[0:4])[0], struct.unpack('>I', data[0:4])[0]))
-    print(prefix + '4F: l %f b %f' % (struct.unpack('<f', data[0:4])[0], struct.unpack('>f', data[0:4])[0]))
-    print(prefix + '4N: b %d.%d.%d.%d l %d.%d.%d.%d' % (bytes[0], bytes[1], bytes[2], bytes[3], bytes[3], bytes[2], bytes[1], bytes[0]))
-    print(prefix + '4E: l %s b %s' % (TimestampUTC(struct.unpack('<I', data[0:4])[0]), TimestampUTC(struct.unpack('>I', data[0:4])[0])))
-
-    if len(data) < 8:
-        return
-    print(prefix + '8I: sl %d ul %d sb %d ub %d' % (struct.unpack('<q', data[0:8])[0], struct.unpack('<Q', data[0:8])[0], struct.unpack('>q', data[0:8])[0], struct.unpack('>Q', data[0:8])[0]))
-    print(prefix + '8T: ul %s ub %s' % (FiletimeUTC(struct.unpack('<Q', data[0:8])[0]), FiletimeUTC(struct.unpack('>Q', data[0:8])[0])))
-    print(prefix + '8F: l %f b %f' % (struct.unpack('<d', data[0:8])[0], struct.unpack('>d', data[0:8])[0]))
-
-    if len(data) < 16:
-        return
-    print(prefix + '16G: b %02X%02X%02X%02X-%02X%02X-%02X%02X-%02X%02X-%02X%02X%02X%02X%02X%02X m {%02X%02X%02X%02X-%02X%02X-%02X%02X-%02X%02X-%02X%02X%02X%02X%02X%02X}' % tuple(bytes[0:16] + bytes[3::-1] + bytes[5:3:-1] + bytes[7:5:-1] + bytes[8:16]))
-
-def CalculateByteStatistics(dPrevalence):
-    sumValues = sum(dPrevalence.values())
-    countNullByte = dPrevalence[0]
-    countControlBytes = 0
-    countWhitespaceBytes = 0
-    countUniqueBytes = 0
-    for iter in range(1, 0x21):
-        if chr(iter) in string.whitespace:
-            countWhitespaceBytes += dPrevalence[iter]
-        else:
-            countControlBytes += dPrevalence[iter]
-    countControlBytes += dPrevalence[0x7F]
-    countPrintableBytes = 0
-    for iter in range(0x21, 0x7F):
-        countPrintableBytes += dPrevalence[iter]
-    countHighBytes = 0
-    for iter in range(0x80, 0x100):
-        countHighBytes += dPrevalence[iter]
-    entropy = 0.0
-    for iter in range(0x100):
-        if dPrevalence[iter] > 0:
-            prevalence = float(dPrevalence[iter]) / float(sumValues)
-            entropy += - prevalence * math.log(prevalence, 2)
-            countUniqueBytes += 1
-    return sumValues, entropy, countUniqueBytes, countNullByte, countControlBytes, countWhitespaceBytes, countPrintableBytes, countHighBytes
-
-def ExtraInfoMD5(data):
-    if data == None:
-        return ''
-    return hashlib.md5(data).hexdigest()
-
-def ExtraInfoSHA1(data):
-    if data == None:
-        return ''
-    return hashlib.sha1(data).hexdigest()
-
-def ExtraInfoSHA256(data):
-    if data == None:
-        return ''
-    return hashlib.sha256(data).hexdigest()
-
-def ExtraInfoENTROPY(data):
-    if data == None:
-        return ''
-    dPrevalence = {iter: 0 for iter in range(0x100)}
-    for char in data:
-        dPrevalence[ord(char)] += 1
-    sumValues, entropy, countUniqueBytes, countNullByte, countControlBytes, countWhitespaceBytes, countPrintableBytes, countHighBytes = CalculateByteStatistics(dPrevalence)
-    return '%f' % entropy
-
-def ExtraInfoHEADHEX(data):
-    if data == None:
-        return ''
-    return binascii.hexlify(data[:16])
-
-def ExtraInfoHEADASCII(data):
-    if data == None:
-        return ''
-    return ''.join([IFF(ord(b) >= 32 and ord(b) < 128, b, '.') for b in data[:16]])
-
-def ExtraInfoTAILHEX(data):
-    if data == None:
-        return ''
-    return binascii.hexlify(data[-16:])
-
-def ExtraInfoTAILASCII(data):
-    if data == None:
-        return ''
-    return ''.join([IFF(ord(b) >= 32 and ord(b) < 128, b, '.') for b in data[-16:]])
-
-def ExtraInfoHISTOGRAM(data):
-    if data == None:
-        return ''
-    dPrevalence = {iter: 0 for iter in range(0x100)}
-    for char in data:
-        dPrevalence[ord(char)] += 1
-    result = []
-    count = 0
-    minimum = None
-    maximum = None
-    for iter in range(0x100):
-        if dPrevalence[iter] > 0:
-            result.append('0x%02x:%d' % (iter, dPrevalence[iter]))
-            count += 1
-            if minimum == None:
-                minimum = iter
-            else:
-                minimum = min(minimum, iter)
-            if maximum == None:
-                maximum = iter
-            else:
-                maximum = max(maximum, iter)
-    result.insert(0, '%d' % count)
-    result.insert(1, IFF(minimum == None, '', '0x%02x' % minimum))
-    result.insert(2, IFF(maximum == None, '', '0x%02x' % maximum))
-    return ','.join(result)
-
-def ExtraInfoBYTESTATS(data):
-    if data == None:
-        return ''
-    dPrevalence = {iter: 0 for iter in range(0x100)}
-    for char in data:
-        dPrevalence[ord(char)] += 1
-    sumValues, entropy, countUniqueBytes, countNullByte, countControlBytes, countWhitespaceBytes, countPrintableBytes, countHighBytes = CalculateByteStatistics(dPrevalence)
-    return '%d,%d,%d,%d,%d' % (countNullByte, countControlBytes, countWhitespaceBytes, countPrintableBytes, countHighBytes)
-
-def GenerateExtraInfo(extra, data):
-    if extra == '':
-        return ''
-    if extra.startswith('!') or extra.startswith('#'):
-        extra = extra[1:]
-    dExtras = {'%LENGTH%': lambda x: IFF(data == None, '', lambda: '%d' % len(data)),
-               '%MD5%': ExtraInfoMD5,
-               '%SHA1%': ExtraInfoSHA1,
-               '%SHA256%': ExtraInfoSHA256,
-               '%ENTROPY%': ExtraInfoENTROPY,
-               '%HEADHEX%': ExtraInfoHEADHEX,
-               '%HEADASCII%': ExtraInfoHEADASCII,
-               '%TAILHEX%': ExtraInfoTAILHEX,
-               '%TAILASCII%': ExtraInfoTAILASCII,
-               '%HISTOGRAM%': ExtraInfoHISTOGRAM,
-               '%BYTESTATS%': ExtraInfoBYTESTATS,
-              }
-    for variable in dExtras:
-        if variable in extra:
-            extra = extra.replace(variable, dExtras[variable](data))
-    return extra.replace(r'\t', '\t').replace(r'\n', '\n')
-
 #-BEGINCODE cDump------------------------------------------------------------------------------------
 #import binascii
 #import sys
@@ -1350,6 +1074,7 @@ class cDump():
         encoded = binascii.b2a_base64(self.data)
         if nowhitespace:
             return encoded
+        encoded = encoded.strip()
         oDumpStream = self.cDumpStream(self.prefix)
         length = 64
         for i in range(0, len(encoded), length):
@@ -1376,12 +1101,6 @@ class cDump():
             return ord(data)
 #-ENDCODE cDump--------------------------------------------------------------------------------------
 
-def HexDump(data):
-    return cDump(data).HexDump()
-
-def HexAsciiDump(data, rle=False):
-    return cDump(data).HexAsciiDump(rle=rle)
-
 def IfWIN32SetBinary(io):
     if sys.platform == 'win32':
         import msvcrt
@@ -1390,8 +1109,6 @@ def IfWIN32SetBinary(io):
 #Fix for http://bugs.python.org/issue11395
 def StdoutWriteChunked(data):
     if sys.version_info[0] > 2:
-        if isinstance(data, str):
-            data = bytes(data, 'utf-8', 'backslashreplace')
         sys.stdout.buffer.write(data)
     else:
         while data != '':
@@ -1402,245 +1119,367 @@ def StdoutWriteChunked(data):
                 return
             data = data[10000:]
 
-def SearchAndReplaceFormatCallBack(oMatch):
-    return '%ds' % int(oMatch.groups()[0], 16)
+class cVariables():
+    def __init__(self, variablesstring='', separator=DEFAULT_SEPARATOR):
+        self.dVariables = {}
+        if variablesstring == '':
+            return
+        for variable in variablesstring.split(separator):
+            name, value = VariableNameValue(variable)
+            self.dVariables[name] = value
 
-def SearchAndReplaceFormat(format):
-    return re.sub(r'0x([0-9a-fA-F]+)s', SearchAndReplaceFormatCallBack, format)
+    def SetVariable(self, name, value):
+        self.dVariables[name] = value
 
-def MergeUserLibrarySub(filename):
-    global dLibrary
+    def Instantiate(self, astring):
+        for key, value in self.dVariables.items():
+            astring = astring.replace('%' + key + '%', value)
+        return astring
 
-    lines = File2Strings(filename)
-    if not lines:
-        return
-    for line in lines:
-        if not line.startswith('#'):
-            result = line.split('=', 1)
-            if len(result) == 2:
-                values = result[1].split(' ', 1)
-                if len(values) == 2:
-                    dLibrary[result[0]] = values
-                else:
-                    dLibrary[result[0]] = [result[1], '']
+class cOutput():
+    def __init__(self, filenameOption=None):
+        self.starttime = time.time()
+        self.filenameOption = filenameOption
+        self.separateFiles = False
+        self.progress = False
+        self.console = False
+        self.head = False
+        self.headCounter = 0
+        self.tail = False
+        self.tailQueue = []
+        self.fOut = None
+        self.rootFilenames = {}
+        if self.filenameOption:
+            if self.ParseHash(self.filenameOption):
+                if not self.separateFiles and self.filename != '':
+                    self.fOut = open(self.filename, 'w')
+            elif self.filenameOption != '':
+                self.fOut = open(self.filenameOption, 'w')
 
-def NumberToHex(number):
-    result = hex(number)
-    if len(result) % 2 == 1:
-        result = '0x0' + result[2:]
-    return result
+    def ParseHash(self, option):
+        if option.startswith('#'):
+            position = self.filenameOption.find('#', 1)
+            if position > 1:
+                switches = self.filenameOption[1:position]
+                self.filename = self.filenameOption[position + 1:]
+                for switch in switches:
+                    if switch == 's':
+                        self.separateFiles = True
+                    elif switch == 'p':
+                        self.progress = True
+                    elif switch == 'c':
+                        self.console = True
+                    elif switch == 'l':
+                        pass
+                    elif switch == 'g':
+                        if self.filename != '':
+                            extra = self.filename + '-'
+                        else:
+                            extra = ''
+                        self.filename = '%s-%s%s.txt' % (os.path.splitext(os.path.basename(sys.argv[0]))[0], extra, self.FormatTime())
+                    elif switch == 'h':
+                        self.head = True
+                    elif switch == 't':
+                        self.tail = True
+                    else:
+                        return False
+                return True
+        return False
 
-def MergeUserLibrary():
-    MergeUserLibrarySub(os.path.splitext(sys.argv[0])[0] + LIBRARY_EXTENSION)
-    MergeUserLibrarySub(os.path.splitext(os.path.basename(sys.argv[0]))[0] + LIBRARY_EXTENSION)
+    @staticmethod
+    def FormatTime(epoch=None):
+        if epoch == None:
+            epoch = time.time()
+        return '%04d%02d%02d-%02d%02d%02d' % time.localtime(epoch)[0:6]
 
-def PrintLibrary():
-    global dLibrary
+    def RootUnique(self, root):
+        if not root in self.rootFilenames:
+            self.rootFilenames[root] = None
+            return root
+        iter = 1
+        while True:
+            newroot = '%s_%04d' % (root, iter)
+            if not newroot in self.rootFilenames:
+                self.rootFilenames[newroot] = None
+                return newroot
+            iter += 1
 
-    print('Valid format library names:')
-    for key in sorted(dLibrary.keys()):
-        print(' %s: %s %s' % (key, dLibrary[key][0], dLibrary[key][1]))
+    def LineSub(self, line, eol):
+        if self.fOut == None or self.console:
+            try:
+                print(line, end=eol)
+            except UnicodeEncodeError:
+                encoding = sys.stdout.encoding
+                print(line.encode(encoding, errors='backslashreplace').decode(encoding), end=eol)
+#            sys.stdout.flush()
+        if self.fOut != None:
+            self.fOut.write(line + '\n')
+            self.fOut.flush()
 
-def Library(name):
-    global dLibrary
+    def Line(self, line, eol='\n'):
+        if self.head:
+            if self.headCounter < 10:
+                self.LineSub(line, eol)
+            elif self.tail:
+                self.tailQueue = self.tailQueue[-9:] + [[line, eol]]
+            self.headCounter += 1
+        elif self.tail:
+            self.tailQueue = self.tailQueue[-9:] + [[line, eol]]
+        else:
+            self.LineSub(line, eol)
 
-    MergeUserLibrary()
+    def LineTimestamped(self, line):
+        self.Line('%s: %s' % (self.FormatTime(), line))
+
+    def Filename(self, filename, index, total):
+        self.separateFilename = filename
+        if self.progress:
+            if index == 0:
+                eta = ''
+            else:
+                seconds = int(float((time.time() - self.starttime) / float(index)) * float(total - index))
+                eta = 'estimation %d seconds left, finished %s ' % (seconds, self.FormatTime(time.time() + seconds))
+            PrintError('%d/%d %s%s' % (index + 1, total, eta, self.separateFilename))
+        if self.separateFiles and self.filename != '':
+            oFilenameVariables = cVariables()
+            oFilenameVariables.SetVariable('f', self.separateFilename)
+            basename = os.path.basename(self.separateFilename)
+            oFilenameVariables.SetVariable('b', basename)
+            oFilenameVariables.SetVariable('d', os.path.dirname(self.separateFilename))
+            root, extension = os.path.splitext(basename)
+            oFilenameVariables.SetVariable('r', root)
+            oFilenameVariables.SetVariable('ru', self.RootUnique(root))
+            oFilenameVariables.SetVariable('e', extension)
+
+            self.Close()
+            self.fOut = open(oFilenameVariables.Instantiate(self.filename), 'w')
+
+    def Close(self):
+        if self.head and self.tail and len(self.tailQueue) > 0:
+            self.LineSub('...', '\n')
+
+        for line, eol in self.tailQueue:
+            self.LineSub(line, eol)
+
+        self.headCounter = 0
+        self.tailQueue = []
+
+        if self.fOut != None:
+            self.fOut.close()
+            self.fOut = None
+
+def ToString(value):
+    if isinstance(value, str):
+        return value
+    else:
+        return str(value)
+
+def Quote(value, separator, quote):
+    value = ToString(value)
+    if len(value) > 1 and value[0] == quote and value[-1] == quote:
+        return value
+    if separator in value or value == '':
+        return quote + value + quote
+    else:
+        return value
+
+def MakeCSVLine(row, separator, quote):
+    return separator.join([Quote(value, separator, quote) for value in row])
+
+class cLogfile():
+    def __init__(self, keyword, comment):
+        self.starttime = time.time()
+        self.errors = 0
+        if keyword == '':
+            self.oOutput = None
+        else:
+            self.oOutput = cOutput('%s-%s-%s.log' % (os.path.splitext(os.path.basename(sys.argv[0]))[0], keyword, self.FormatTime()))
+        self.Line('Start')
+        self.Line('UTC', '%04d%02d%02d-%02d%02d%02d' % time.gmtime(time.time())[0:6])
+        self.Line('Comment', comment)
+        self.Line('Args', repr(sys.argv))
+        self.Line('Version', __version__)
+        self.Line('Python', repr(sys.version_info))
+        self.Line('Platform', sys.platform)
+        self.Line('CWD', repr(os.getcwd()))
+
+    @staticmethod
+    def FormatTime(epoch=None):
+        if epoch == None:
+            epoch = time.time()
+        return '%04d%02d%02d-%02d%02d%02d' % time.localtime(epoch)[0:6]
+
+    def Line(self, *line):
+        if self.oOutput != None:
+            self.oOutput.Line(MakeCSVLine((self.FormatTime(), ) + line, DEFAULT_SEPARATOR, QUOTE))
+
+    def LineError(self, *line):
+        self.Line('Error', *line)
+        self.errors += 1
+
+    def Close(self):
+        if self.oOutput != None:
+            self.Line('Finish', '%d error(s)' % self.errors, '%d second(s)' % (time.time() - self.starttime))
+            self.oOutput.Close()
+
+def CalculateByteStatistics(dPrevalence=None, data=None):
+    averageConsecutiveByteDifference = None
+    if dPrevalence == None:
+        dPrevalence = {iter: 0 for iter in range(0x100)}
+        sumDifferences = 0.0
+        previous = None
+        if len(data) > 1:
+            for byte in data:
+                byte = C2IIP2(byte)
+                dPrevalence[byte] += 1
+                if previous != None:
+                    sumDifferences += abs(byte - previous)
+                previous = byte
+            averageConsecutiveByteDifference = sumDifferences /float(len(data)-1)
+    sumValues = sum(dPrevalence.values())
+    countNullByte = dPrevalence[0]
+    countControlBytes = 0
+    countWhitespaceBytes = 0
+    countUniqueBytes = 0
+    for iter in range(1, 0x21):
+        if chr(iter) in string.whitespace:
+            countWhitespaceBytes += dPrevalence[iter]
+        else:
+            countControlBytes += dPrevalence[iter]
+    countControlBytes += dPrevalence[0x7F]
+    countPrintableBytes = 0
+    for iter in range(0x21, 0x7F):
+        countPrintableBytes += dPrevalence[iter]
+    countHighBytes = 0
+    for iter in range(0x80, 0x100):
+        countHighBytes += dPrevalence[iter]
+    countHexadecimalBytes = 0
+    countBASE64Bytes = 0
+    for iter in range(0x30, 0x3A):
+        countHexadecimalBytes += dPrevalence[iter]
+        countBASE64Bytes += dPrevalence[iter]
+    for iter in range(0x41, 0x47):
+        countHexadecimalBytes += dPrevalence[iter]
+    for iter in range(0x61, 0x67):
+        countHexadecimalBytes += dPrevalence[iter]
+    for iter in range(0x41, 0x5B):
+        countBASE64Bytes += dPrevalence[iter]
+    for iter in range(0x61, 0x7B):
+        countBASE64Bytes += dPrevalence[iter]
+    countBASE64Bytes += dPrevalence[ord('+')] + dPrevalence[ord('/')] + dPrevalence[ord('=')]
+    entropy = 0.0
+    for iter in range(0x100):
+        if dPrevalence[iter] > 0:
+            prevalence = float(dPrevalence[iter]) / float(sumValues)
+            entropy += - prevalence * math.log(prevalence, 2)
+            countUniqueBytes += 1
+    return sumValues, entropy, countUniqueBytes, countNullByte, countControlBytes, countWhitespaceBytes, countPrintableBytes, countHighBytes, countHexadecimalBytes, countBASE64Bytes, averageConsecutiveByteDifference
+
+def InstantiateCOutput(options):
+    filenameOption = None
+    if options.output != '':
+        filenameOption = options.output
+    return cOutput(filenameOption)
+
+class cAmsiScan():
+    AMSI_RESULT_CLEAN = 0,
+    AMSI_RESULT_NOT_DETECTED = 1
+    AMSI_RESULT_BLOCKED_BY_ADMIN_START = 0x4000
+    AMSI_RESULT_BLOCKED_BY_ADMIN_END = 0x4FFF
+    AMSI_RESULT_DETECTED = 0x8000
+
+    def __init__(self, appName='Python-AMSI'):
+        self.appName = appName
+        self.amsiContext = None
+        self.dAMSIRESULTS = {
+            cAmsiScan.AMSI_RESULT_CLEAN: 'AMSI_RESULT_CLEAN',
+            cAmsiScan.AMSI_RESULT_NOT_DETECTED: 'AMSI_RESULT_NOT_DETECTED',
+            cAmsiScan.AMSI_RESULT_BLOCKED_BY_ADMIN_START: 'AMSI_RESULT_BLOCKED_BY_ADMIN_START',
+            cAmsiScan.AMSI_RESULT_BLOCKED_BY_ADMIN_END: 'AMSI_RESULT_BLOCKED_BY_ADMIN_END',
+            cAmsiScan.AMSI_RESULT_DETECTED: 'AMSI_RESULT_DETECTED',
+        }
+
+        self.FunctionAmsiInitialize = ctypes.windll.amsi.AmsiInitialize
+        self.FunctionAmsiInitialize.argtypes = [ctypes.wintypes.LPCSTR, ctypes.POINTER(ctypes.wintypes.HANDLE)]
+
+        self.FunctionAmsiUninitialize = ctypes.windll.amsi.AmsiUninitialize
+        self.FunctionAmsiUninitialize.argtypes = [ctypes.wintypes.HANDLE]
+
+        self.FunctionAmsiScanBuffer = ctypes.windll.amsi.AmsiScanBuffer
+        self.FunctionAmsiScanBuffer.argtypes = [ctypes.wintypes.HANDLE, ctypes.wintypes.LPVOID, ctypes.wintypes.ULONG, ctypes.wintypes.LPCSTR, ctypes.wintypes.UINT, ctypes.POINTER(ctypes.wintypes.UINT)]
+
+    def AmsiInitialize(self):
+        self.amsiContext = ctypes.wintypes.HANDLE()
+        hr = self.FunctionAmsiInitialize(C2BIP3(self.appName), self.amsiContext)
+        if hr != 0:
+            raise Exception('Error AmsiInitialize: %d' % hr)
+
+    def AmsiUninitialize(self):
+        self.FunctionAmsiUninitialize(self.amsiContext)
+
+    def AmsiScanBuffer(self, buffer, contentName='', amsiSession=0):
+        if self.amsiContext == None:
+            self.AmsiInitialize()
+        result = ctypes.wintypes.UINT()
+        hr = self.FunctionAmsiScanBuffer(self.amsiContext, buffer, len(buffer), C2BIP3(contentName), amsiSession, ctypes.byref(result))
+        if hr != 0:
+            raise Exception('Error AmsiScanBuffer: %d' % hr)
+        return [not (result.value == cAmsiScan.AMSI_RESULT_CLEAN or result.value == cAmsiScan.AMSI_RESULT_NOT_DETECTED), self.dAMSIRESULTS[result.value]]
+
+def Default(value, default):
+    if value == '':
+        return default
+    else:
+        return value
+
+def ProcessBinaryFile(filename, content, cutexpression, flag, oOutput, oLogfile, options, oParserFlag):
+    if content == None:
+        try:
+            oBinaryFile = cBinaryFile(filename, C2BIP3(options.password), options.noextraction, options.literalfilenames)
+        except:
+            oLogfile.LineError('Opening file %s %s' % (filename, repr(sys.exc_info()[1])))
+            return
+        oLogfile.Line('Success', 'Opening file %s' % filename)
+        try:
+            data = oBinaryFile.read()
+        except:
+            oLogfile.LineError('Reading file %s %s' % (filename, repr(sys.exc_info()[1])))
+            return
+        data = CutData(data, cutexpression)
+        oBinaryFile.close()
+    else:
+        data = content
+
+    (flagoptions, flagargs) = oParserFlag.parse_args(flag.split(' '))
 
     try:
-        return dLibrary[name]
-    except KeyError:
-        print('Invalid format library name: %s' % name)
-        print('')
-        PrintLibrary()
-        sys.exit(-1)
+        # ----- Put your data processing code here -----
+        oAmsiScan = cAmsiScan()
+        detected, message = oAmsiScan.AmsiScanBuffer(data)
+        oOutput.Line('%s: %s' % (Default(filename, '<STDIN>'), message))
+        oAmsiScan.AmsiUninitialize()
+        # ----------------------------------------------
+    except:
+        oLogfile.LineError('Processing file %s %s' % (filename, repr(sys.exc_info()[1])))
+        if not options.ignoreprocessingerrors:
+            raise
 
-def ParseFormat(formatvalue):
-    annotations = ''
-    representation = ''
-    remainder = False
-    tlv = None
-    if formatvalue.startswith('name='):
-        formatvalue, annotations = Library(formatvalue[5:])
-    if formatvalue.startswith('tlv='):
-        tlv = {}
-        for element in formatvalue[4:].split(','):
-            if element.startswith('f:'):
-                format = element[2:]
-            elif element.startswith('t:'):
-                tlv['type'] = int(element[2:])
-            elif element.startswith('l:'):
-                tlv['length'] = int(element[2:])
-            else:
-                raise
+def ProcessBinaryFiles(filenames, oLogfile, options, oParserFlag):
+    oOutput = InstantiateCOutput(options)
+    index = 0
+    if options.jsoninput:
+        items = CheckJSON(sys.stdin.read())
+        if items == None:
+            return
+        for item in items:
+            oOutput.Filename(item['name'], index, len(items))
+            index += 1
+            ProcessBinaryFile(item['name'], item['content'], '', '', oOutput, oLogfile, options, oParserFlag)
     else:
-        formats = formatvalue.split(':')
-        if len(formats) == 2:
-            format, representation = formats
-        else:
-            format = formats[0]
-        if format.endswith('*'):
-            format = format[:-1]
-            remainder = True
-
-    return SearchAndReplaceFormat(format), representation, annotations, remainder, tlv
-
-def FindAll(data, sub):
-    result = []
-    start = 0
-    while True:
-        position = data.find(sub, start)
-        if position == -1:
-            return result
-        result.append(position)
-        start = position + 1
-
-def ParseAnnotations(annotations, dAnnotations):
-    index = None
-    for token in re.split(r'(\d+:)', annotations):
-        if token.endswith(':'):
-            index = int(token[:-1])
-        elif index != None:
-            dAnnotations[index] = token.strip()
-
-def FormatBytesSingle(filename, cutexpression, content, options):
-    MergeUserLibrary()
-
-    format, representation, annotations, remainder, tlv = ParseFormat(options.format)
-
-    dAnnotations = {}
-    if options.annotations != '':
-        ParseAnnotations(options.annotations, dAnnotations)
-    elif annotations != '':
-        ParseAnnotations(annotations, dAnnotations)
-
-    oBinaryFile = cBinaryFile(filename, C2BIP3(options.password), options.noextraction, options.literalfilenames, content)
-    if cutexpression == '':
-        if format != '':
-            if remainder or tlv != None:
-                data = oBinaryFile.read()
-            else:
-                data = oBinaryFile.read(struct.calcsize(format))
-        elif options.find != '':
-            data = oBinaryFile.read()
-        else:
-            data = oBinaryFile.read(options.count * options.step + 16)
-    else:
-        data = CutData(oBinaryFile.read(), cutexpression)
-    oBinaryFile.close()
-
-    if filename != '' and options.select == '':
-        print('File: %s%s' % (filename, IFF(oBinaryFile.extracted, ' (extracted)', '')))
-    if format == '' and options.find == '':
-        print('s:signed u:unsigned l:little-endian b:big-endian m:mixed-endian')
-    if format != '':
-        if options.select != '':
-            if options.dump:
-                DumpFunction = lambda x:x
-                IfWIN32SetBinary(sys.stdout)
-            elif options.hexdump:
-                DumpFunction = HexDump
-            elif options.asciidumprle:
-                DumpFunction = lambda x: HexAsciiDump(x, True)
-            else:
-                DumpFunction = HexAsciiDump
-
-        selectionCounter = 0
-        if tlv == None:
-            size = struct.calcsize(format)
-            for index, element in enumerate(struct.unpack(format, data[0:size])):
-                index += 1
-                if options.select != '':
-                    if options.select != 'r' and int(options.select) == index and (isinstance(element, str) or isinstance(element, bytes)):
-                        StdoutWriteChunked(DumpFunction(element))
-                        selectionCounter += 1
-                else:
-                    if isinstance(element, int) or isinstance(element, long):
-                        if representation == '':
-                            line = '%2d: %15s %10d %10x  %s' % (index, type(element), element, element, IFF(element < 0, '', lambda: TimestampUTC(element)))
-                        elif representation[index - 1] == 'X':
-                            line = '%2d: %15s %10x' % (index, type(element), element)
-                        elif representation[index - 1] == 'I':
-                            line = '%2d: %15s %10d' % (index, type(element), element)
-                        elif representation[index - 1] == 'E':
-                            line = '%2d: %15s %s' % (index, type(element), IFF(element < 0, '', lambda: TimestampUTC(element)))
-                        elif representation[index - 1] == 'T':
-                            line = '%2d: %15s %s' % (index, type(element), IFF(element < 0, '', lambda: FiletimeUTC(element)))
-                    elif isinstance(element, str):
-                        if representation != '' and representation[index - 1] == 'S':
-                            line = '%2d: %15s %s' % (index, type(element), RIN(element))
-                        elif representation != '' and representation[index - 1] == 'X':
-                            line = '%2d: %15s %s' % (index, type(element), binascii.b2a_hex(element))
-                        else:
-                            line = '%2d: %15s %10d %s %s %s %s' % (index, type(element), len(element), ExtraInfoHEADASCII(element[:10]), ExtraInfoHEADHEX(element[:10]), ExtraInfoENTROPY(element), ExtraInfoMD5(element))
-                    elif isinstance(element, bytes):
-                        line = '%2d: %15s %10d %s %s %s %s' % (index, type(element), len(element), ExtraInfoHEADASCII3(element[:10]), ExtraInfoHEADHEX(element[:10]), ExtraInfoENTROPY(element), ExtraInfoMD5(element))
-                    else:
-                        line = '%2d: %15s %s' % (index, type(element), str(element))
-                    print('%s %s' % (line, dAnnotations.get(index, '')))
-            if options.select == 'r' and remainder:
-                StdoutWriteChunked(DumpFunction(data[size:]))
-                selectionCounter += 1
-            if options.select == '' and remainder:
-                print('Remainder: %d' % (len(data) - size))
-                remainderx100 = data[size:size + 0x100]
-                if len(remainderx100) > 0:
-                    oDump = cDump(remainderx100)
-                    print(oDump.HexAsciiDump())
-                    FormatBytesData(remainderx100, -1, options)
-        else:
-            size = struct.calcsize(format)
-            index = 0
-            while len(data) >= size:
-                index += 1
-                fields = struct.unpack(format, data[0:size])
-                data = data[size:]
-                value = data[:fields[tlv['length']]]
-                data = data[fields[tlv['length']]:]
-                if options.select != '':
-                    if options.select != 'r' and int(options.select) == index:
-                        StdoutWriteChunked(DumpFunction(value))
-                        selectionCounter += 1
-                else:
-		                line = '%2d: %8s %5d %s' % (index, NumberToHex(fields[tlv['type']]), fields[tlv['length']], repr(value)[0:40])
-		                print(line)
-            if options.select == 'r' and len(data) > 0:
-                StdoutWriteChunked(DumpFunction(data))
-                selectionCounter += 1
-            if options.select == '' and len(data) > 0:
-                print('Remainder: %d' % (len(data)))
-                remainderx100 = data[:0x100]
-                if len(remainderx100) > 0:
-                    oDump = cDump(remainderx100)
-                    print(oDump.HexAsciiDump())
-                    FormatBytesData(remainderx100, -1, options)
-
-        if options.select != '' and selectionCounter == 0:
-            print('Warning: no item was selected with expression %s' % options.select)
-    elif options.find != '':
-        if not options.find.startswith('#i#'):
-            raise Exception('Unknown find option format: %s' % options.find)
-        searches = []
-        for c in 'bBhHiIqQ':
-            for e in '<>':
-                format = e + c
-                try:
-                    searches.append([format, struct.pack(format, int(options.find[3:]))])
-                except struct.error:
-                    pass
-        for search in searches:
-            for position in FindAll(data, search[1]):
-                print('0x%08x %s 0x%s' % (position, search[0], binascii.b2a_hex(search[1])))
-    elif options.count == 1:
-        FormatBytesData(data, -1, options)
-    else:
-        position = 0
-        for iter in range(options.count):
-            FormatBytesData(data[position:], position, options)
-            position += options.step
-
-def FormatBytesFiles(fileList, options):
-    for filename, cutexpression, content in fileList:
-        FormatBytesSingle(filename, cutexpression, content, options)
+        for filename, cutexpression, flag in filenames:
+            oOutput.Filename(filename, index, len(filenames))
+            index += 1
+            ProcessBinaryFile(filename, None, cutexpression, flag, oOutput, oLogfile, options, oParserFlag)
 
 def Main():
     moredesc = '''
@@ -1649,32 +1488,47 @@ Source code put in the public domain by Didier Stevens, no Copyright
 Use at your own risk
 https://DidierStevens.com'''
 
-    oParser = optparse.OptionParser(usage='usage: %prog [options] [[@]file|cut-expression ...]\n' + __description__ + moredesc, version='%prog ' + __version__)
+    oParserFlag = optparse.OptionParser(usage='\nFlag arguments start with #f#:')
+    oParserFlag.add_option('-l', '--length', action='store_true', default=False, help='Print length of files')
+
+    oParser = optparse.OptionParser(usage='usage: %prog [options] [[@]file|cut-expression|flag-expression ...]\n' + __description__ + moredesc, version='%prog ' + __version__, epilog='This tool also accepts flag arguments (#f#), read the man page (-m) for more info.')
     oParser.add_option('-m', '--man', action='store_true', default=False, help='Print manual')
-    oParser.add_option('-f', '--format', default='', help='Struct format string to use')
-    oParser.add_option('-n', '--annotations', default='', help='Annotations')
-    oParser.add_option('-s', '--select', default='', help='Select item nr for dumping or r for remainder')
-    oParser.add_option('-F', '--find', default='', help='Find value')
-    oParser.add_option('-d', '--dump', action='store_true', default=False, help='perform dump')
-    oParser.add_option('-x', '--hexdump', action='store_true', default=False, help='perform hex dump')
-    oParser.add_option('-a', '--asciidump', action='store_true', default=False, help='perform ascii dump')
-    oParser.add_option('-A', '--asciidumprle', action='store_true', default=False, help='perform ascii dump with RLE')
-    oParser.add_option('-C', '--count', type=int, default=1, help='The number of repeating bytes (default 1)')
-    oParser.add_option('-S', '--step', type=int, default=1, help='The step to use when option --count is not 1 (default 1)')
-    oParser.add_option('--password', default='infected', help='The ZIP password to be used (default infected)')
-    oParser.add_option('--noextraction', action='store_true', default=False, help='Do not extract from archive file')
-    oParser.add_option('--literalfilenames', action='store_true', default=False, help='Do not interpret filenames')
-    oParser.add_option('--jsoninput', action='store_true', default=False, help='Consume JSON from stdin')
+    oParser.add_option('-o', '--output', type=str, default='', help='Output to file (# supported)')
+    oParser.add_option('-p', '--password', default='infected', help='The ZIP password to be used (default infected)')
+    oParser.add_option('-n', '--noextraction', action='store_true', default=False, help='Do not extract from archive file')
+    oParser.add_option('-l', '--literalfilenames', action='store_true', default=False, help='Do not interpret filenames')
+    oParser.add_option('--recursedir', action='store_true', default=False, help='Recurse directories (wildcards and here files (@...) allowed)')
+    oParser.add_option('--checkfilenames', action='store_true', default=False, help='Perform check if files exist prior to file processing')
+    oParser.add_option('-j', '--jsoninput', action='store_true', default=False, help='Consume JSON from stdin')
+    oParser.add_option('--logfile', type=str, default='', help='Create logfile with given keyword')
+    oParser.add_option('--logcomment', type=str, default='', help='A string with comments to be included in the log file')
+    oParser.add_option('--ignoreprocessingerrors', action='store_true', default=False, help='Ignore errors during file processing')
     (options, args) = oParser.parse_args()
 
     if options.man:
         oParser.print_help()
+        oParserFlag.print_help()
         PrintManual()
         return
 
-    fileList = GenerateFileList(args, options)
-    if fileList != None:
-        FormatBytesFiles(fileList, options)
+    if len(args) != 0 and options.jsoninput:
+        print('Error: option -j can not be used with files')
+        return
+
+    oLogfile = cLogfile(options.logfile, options.logcomment)
+    oExpandFilenameArguments = cExpandFilenameArguments(args, options.literalfilenames, options.recursedir, options.checkfilenames, '#c#', '#f#')
+    oLogfile.Line('FilesCount', str(len(oExpandFilenameArguments.Filenames())))
+    oLogfile.Line('Files', repr(oExpandFilenameArguments.Filenames()))
+    if oExpandFilenameArguments.warning:
+        PrintError('\nWarning:')
+        PrintError(oExpandFilenameArguments.message)
+        oLogfile.Line('Warning', repr(oExpandFilenameArguments.message))
+
+    ProcessBinaryFiles(oExpandFilenameArguments.Filenames(), oLogfile, options, oParserFlag)
+
+    if oLogfile.errors > 0:
+        PrintError('Number of errors: %d' % oLogfile.errors)
+    oLogfile.Close()
 
 if __name__ == '__main__':
     Main()
