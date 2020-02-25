@@ -2,8 +2,8 @@
 
 __description__ = 'This is essentialy a wrapper for the struct module'
 __author__ = 'Didier Stevens'
-__version__ = '0.0.9'
-__date__ = '2019/07/15'
+__version__ = '0.0.13'
+__date__ = '2020/02/04'
 
 """
 Source code put in public domain by Didier Stevens, no Copyright
@@ -41,6 +41,13 @@ History:
   2019/03/25: added library & -f name= ; added select remainder (-s r)
   2019/04/18: added FiletimeUTC; added support for annotations to library files
   2019/07/15: 0.0.9 added tlv format parsing
+  2019/11/03: 0.0.10 added bitstream support
+  2019/11/08: added multibits for bitstream
+  2020/01/20: 0.0.11 added ParsePackExpression #p#; added OID
+  2020/01/24: added #h# support for spaces; bugfix #e#chr
+  2020/01/25: added DSS_DEFAULT_HASH_ALGORITHMS; Python 3 fixes
+  2020/01/26: 0.0.12 ParsePackExpression replaced eval with int
+  2020/02/04: 0.0.13 added suffix for tlv; added support to -s for multiple selection; added j:b for bitstream
 
 Todo:
 """
@@ -166,6 +173,8 @@ Remainder: 9
 8F: l 0.000000 b -721504228050136948830706706079286975060186906491372824967789492043776.000000
 
 For strings, the output will include string length, ASCII representation of the string (first 10 bytes), hexadecimal representation (first 10 bytes), entropy and MD5 hash.
+By default, it's the MD5 hash, but this can be changed by setting environment variable DSS_DEFAULT_HASH_ALGORITHMS.
+Like this: set DSS_DEFAULT_HASH_ALGORITHMS=SHA256
 
 C:\Demo>format-bytes.py -f "<h14s" random.bin
 File: random.bin
@@ -174,6 +183,7 @@ File: random.bin
 
 Strings can be selected with option -s for dumping. Default is ASCII dump (-a), but run-length encoded ASCII (-A), hexadecimal (-x) and binary (-d) dump is available too.
 The remainder can also be selected: -s r.
+Selecting several strings is allowed with a range, for example: -s 3-6.
 
 Annotations can be added to particular members, using option -n. Like in this example:
 
@@ -195,7 +205,7 @@ Remainder: 9
 8T: ul N/A ub N/A
 8F: l 0.000000 b -721504228050136948830706706079286975060186906491372824967789492043776.000000
 
-This tool can also parse TLV records (Type, Length Value). To achieve this, start the format specifier with tlv= and provide values for format (f:), type (t:) and length (l:) separated by a comma (,).
+This tool can also parse TLV records (Type, Length Value). To achieve this, start the format specifier with tlv= and provide values for format (f:), type (t:), length (l:) and suffix (s:) separated by a comma (,).
 Like this example:
 
 C:\Demo>format-bytes.py -f "tlv=f:<III,t:0,l:2" registry.blob.bin
@@ -210,6 +220,38 @@ File: registry.blob.bin
  8:     0x20   735 '0\x82\x02\xdb0\x82\x01\xc3\xa0\x03\x02\
 
 This command parses the binary blob of a certificate found inside the Windows registry. Each record consists of 3 little-endian 32-bit integers (<III) followed by data. The first integer (index 0), the PropID, is the type (t:0) and the third integer (index 2) is the length (l:2). This is the length of the value (data).
+
+Suffix s: is optional and is a format specifier (like f:) in case the TLV record format to parse has one or more fields after the data.
+This for example the case with chunks in PNG files:
+
+C:\Demo>format-bytes.py -f "tlv=f:>II,l:0,t:1,s:<I" #c#8: image.png
+File: image.png
+ 1: 0x49484452    13 '\x00\x00\x01\xb2\x00\x00\x01p\x08\x06\x
+ 2: 0x70485973     9 '\x00\x00\x0e\xc4\x00\x00\x0e\xc4\x01'
+ 3: 0x74494d45     7 '\x07\xe4\x01\x04\x14*\x19'
+ 4: 0x74455874     7 'Author\x00'
+ 5: 0x74455874    12 'Description\x00'
+ 6: 0x74455874    10 'Copyright\x00'
+ 7: 0x74455874    14 'Creation time\x00'
+ 8: 0x74455874     9 'Software\x00'
+ 9: 0x74455874    11 'Disclaimer\x00'
+10: 0x74455874     8 'Warning\x00'
+11: 0x74455874     7 'Source\x00'
+12: 0x74455874     8 'Comment\x00'
+13: 0x74455874     6 'Title\x00'
+14: 0x49444154  4661 'x\x9c\xed\xddQz\xe36\xb2\x06P\xe8~\xb3\
+15: 0x49454e44     0 ''
+
+This tool can also extract single bits and join them into a bitstream. To achieve this, start the format specifier with bitstream= and provide values for format (f:), bits (b:) and join (j:) separated by a comma (,).
+Like this example:
+
+C:\Demo>format-bytes.py -f "bitstream=f:<H,b:0,j:<" stego.wav
+
+The bytes in file stego.wav are parsed as little-endian, unsigned 16-bit integers (<H) because of format specifier f:<H.
+For each integer, the least significant bit is taken (bits specifier b:0) and then joined into bytes from least significant bit to most significant bit (join specifier j:<).
+
+:b can take several bit positions, separated by ;, like this: b:0;1.
+:j can be <, > or b. Value b will output a bitstream: a string of 0s and 1s.
 
 Format strings can be stored inside a library file. A library file has the name of the program (format-bytes) and extension .library. Library files can be placed in the same directory as the program, and/or the current directory.
 A library file is a text file. Each format string has a name and takes one line: name=formatstring.
@@ -391,6 +433,11 @@ For example, #e#repeat(3, 'AB') generates byte sequence ABABAB.
 When more than one function needs to be used, the byte sequences generated by the functions can be concatenated with the + operator.
 For example, #e#repeat(10,0xFF)+random(100) will generate a byte sequence of 10 FF bytes followed by 100 random bytes.
 
+File arguments that start with #p# are a notational convention to pack a Python expression to generate data (using Python module struct).
+The string after #p# must contain 2 expressions separated by a # character, like #p#I#123456.
+The first expression (I in this example) is the format string for the Python struct.pack function, and the second expression (123456 in this example) is a Python expression that needs to be packed by struct.pack.
+In this example, format string I represents an unsigned, 32-bit, little-endian integer, and thus #p#I#123456 generates byte sequence 40E20100 (hexadecimal).
+
 The cut argument (or cut operator) allows for the partial selection of the content of a file. This argument starts with #c# followed by a "cut-expression". Use this expression to "cut out" part of the content.
 The cut-argument must be put in front of a file argument, like in this example:
 
@@ -410,13 +457,14 @@ tool.py #c#0:100l data-1.bin #c#0:200l data-2.bin
 
 With these arguments, tool.py will only process the first 100 bytes (0:100l) of file data-1.bin and the first 200 bytes (0:200l) of file data-2.bin.
 
-A cut-expression is composed of 2 terms separated by a colon (:), like this:
+This cut-expression is composed of 2 terms separated by a colon (:), like this:
 termA:termB
 termA and termB can be:
 - nothing (an empty string)
 - a positive decimal number; example: 10
 - an hexadecimal number (to be preceded by 0x); example: 0x10
-- a case sensitive string to search for (surrounded by square brackets and single quotes); example: ['MZ']
+- a case sensitive ASCII string to search for (surrounded by square brackets and single quotes); example: ['MZ']
+- a case sensitive UNICODE string to search for (surrounded by square brackets and single quotes prefixed with u); example: [u'User']
 - an hexadecimal string to search for (surrounded by square brackets); example: [d0cf11e0]
 If termA is nothing, then the cut section of bytes starts with the byte at position 0.
 If termA is a number, then the cut section of bytes starts with the byte at the position given by the number (first byte has index 0).
@@ -427,18 +475,27 @@ When termB is a number, it can have suffix letter l. This indicates that the num
 termB can also be a negative number (decimal or hexademical): in that case the position is counted from the end of the file. For example, :-5 selects the complete file except the last 5 bytes.
 If termB is a string to search for, then the cut section of bytes ends with the last byte at the position where the string is first found. If the string is not found, the cut is empty (0 bytes).
 No checks are made to assure that the position specified by termA is lower than the position specified by termB. This is left up to the user.
-Search string expressions (ASCII and hexadecimal) can be followed by an instance (a number equal to 1 or greater) to indicate which instance needs to be taken. For example, ['ABC']2 will search for the second instance of string 'ABC'. If this instance is not found, then nothing is selected.
-Search string expressions (ASCII and hexadecimal) can be followed by an offset (+ or - a number) to add (or substract) an offset to the found instance. For example, ['ABC']+3 will search for the first instance of string 'ABC' and then select the bytes after ABC (+ 3).
-Finally, search string expressions (ASCII and hexadecimal) can be followed by an instance and an offset.
+Search string expressions (ASCII, UNICODE and hexadecimal) can be followed by an instance (a number equal to 1 or greater) to indicate which instance needs to be taken. For example, ['ABC']2 will search for the second instance of string 'ABC'. If this instance is not found, then nothing is selected.
+Search string expressions (ASCII, UNICODE and hexadecimal) can be followed by an offset (+ or - a number) to add (or substract) an offset to the found instance. This number can be a decimal or hexadecimal (prefix 0x) value. For example, ['ABC']+3 will search for the first instance of string 'ABC' and then select the bytes after ABC (+ 3).
+Finally, search string expressions (ASCII, UNICODE and hexadecimal) can be followed by an instance and an offset.
 Examples:
-This cut-expression can be used to dump the first 256 bytes of a PE file located inside the file content: ['MZ']:0x100l
-This cut-expression can be used to dump the OLE file located inside the file content: [d0cf11e0]:
+This cut-expression can be used to dump the first 256 bytes of a PE file located inside the stream: ['MZ']:0x100l
+This cut-expression can be used to dump the OLE file located inside the stream: [d0cf11e0]:
 
 '''
     for line in manual.split('\n'):
         print(textwrap.fill(line, 79))
 
 LIBRARY_EXTENSION = '.library'
+
+KEYWORD_FORMAT = 'format'
+KEYWORD_TLV = 'tlv'
+KEYWORD_TYPE = 'type'
+KEYWORD_LENGTH = 'length'
+KEYWORD_SUFFIX = 'suffix'
+KEYWORD_BITSTREAM = 'bitstream'
+KEYWORD_BITS = 'bits'
+KEYWORD_JOIN = 'join'
 
 dLibrary = {}
 
@@ -743,13 +800,13 @@ def Interpret(expression):
         elif functionname == FUNCTIONNAME_CHR:
             if CheckFunction(functionname, arguments, 1, 2):
                 return None
-            number = CheckNumber(arguments[0], minimum=1, maximum=255)
+            number = CheckNumber(arguments[0], minimum=0, maximum=255)
             if number == None:
                 return None
             if len(arguments) == 1:
                 decoded += chr(number)
             else:
-                number2 = CheckNumber(arguments[1], minimum=1, maximum=255)
+                number2 = CheckNumber(arguments[1], minimum=0, maximum=255)
                 if number2 == None:
                     return None
                 decoded += ''.join([chr(n) for n in range(number, number2 + 1)])
@@ -757,6 +814,14 @@ def Interpret(expression):
             print('Error: unknown function: %s' % functionname)
             return None
     return decoded
+
+def ParsePackExpression(data):
+    try:
+        packFormat, pythonExpression = data.split('#', 1)
+        data = struct.pack(packFormat, int(pythonExpression))
+        return data
+    except:
+        return None
 
 FCH_FILENAME = 0
 FCH_DATA = 1
@@ -766,7 +831,7 @@ def FilenameCheckHash(filename, literalfilename):
     if literalfilename:
         return FCH_FILENAME, filename
     elif filename.startswith('#h#'):
-        result = Hex2Bytes(filename[3:])
+        result = Hex2Bytes(filename[3:].replace(' ', ''))
         if result == None:
             return FCH_ERROR, 'hexadecimal'
         else:
@@ -780,6 +845,12 @@ def FilenameCheckHash(filename, literalfilename):
         result = Interpret(filename[3:])
         if result == None:
             return FCH_ERROR, 'expression'
+        else:
+            return FCH_DATA, C2BIP3(result)
+    elif filename.startswith('#p#'):
+        result = ParsePackExpression(filename[3:])
+        if result == None:
+            return FCH_ERROR, 'pack'
         else:
             return FCH_DATA, result
     elif filename.startswith('#'):
@@ -1116,8 +1187,47 @@ def TimestampUTC(epoch=None):
 def FiletimeUTC(value):
     try:
         return '%s.%07d' % (datetime.datetime.utcfromtimestamp((value - 116444736000000000) / 10000000).strftime("%Y/%m/%d %H:%M:%S"), (value - 116444736000000000) % 10000000)
-    except ValueError:
+    except (ValueError, OSError):
         return 'N/A'
+
+def P23Ord(value):
+    if type(value) == int:
+        return value
+    else:
+        return ord(value)
+
+def OIDDERDecode(bytes):
+    byte = bytes[0]
+    if byte < 40:
+        result = [0, byte]
+    elif byte < 80:
+        result = [1, byte - 40]
+    else:
+        result = [2, byte - 80]
+
+    result2 = []
+    for byte in bytes[1:] + [-1]:
+        if result2 == []:
+            if byte < 128:
+                result.append(byte)
+            elif byte == 128:
+                return None
+            else:
+                result2.append(byte)
+        else:
+            if byte == -1:
+                return None
+            result2.append(byte)
+            if byte < 128:
+                bits = 0
+                for number in result2:
+                    bits = bits << 7 | number & 0x7F
+                result.append(bits)
+                result2 = []
+    if result2 != [] or result[-1] != -1:
+        None
+    
+    return '.'.join(map(str, result[:-1]))
 
 def FormatBytesData(data, position, options):
     if len(data) == 0:
@@ -1128,6 +1238,11 @@ def FormatBytesData(data, position, options):
         prefix = ''
     else:
         prefix = '%02X ' % position
+
+    if len(data) >= 3 and bytes[0] == 6 and bytes[1] > 0 and bytes[1] <= 32 and bytes[1] <= len(data) - 2:
+        oid = OIDDERDecode(bytes[2:2 + bytes[1]])
+        if oid != None:
+            print(prefix + 'OID: %s' % oid)
 
     print(prefix + '1I: s %d u %d' % (struct.unpack('b', data[0:1])[0], struct.unpack('B', data[0:1])[0]))
 
@@ -1178,6 +1293,59 @@ def CalculateByteStatistics(dPrevalence):
             countUniqueBytes += 1
     return sumValues, entropy, countUniqueBytes, countNullByte, countControlBytes, countWhitespaceBytes, countPrintableBytes, countHighBytes
 
+class cHashCRC32():
+    def __init__(self):
+        self.crc32 = None
+
+    def update(self, data):
+        self.crc32 = zlib.crc32(data)
+
+    def hexdigest(self):
+        return '%08x' % (self.crc32 & 0xffffffff)
+
+class cHashChecksum8():
+    def __init__(self):
+        self.sum = 0
+
+    def update(self, data):
+        if sys.version_info[0] >= 3:
+            self.sum += sum(data)
+        else:
+            self.sum += sum(map(ord, data))
+
+    def hexdigest(self):
+        return '%08x' % (self.sum)
+
+dSpecialHashes = {'crc32': cHashCRC32, 'checksum8': cHashChecksum8}
+
+def GetHashObjects(algorithms):
+    global dSpecialHashes
+    
+    dHashes = {}
+
+    if algorithms == '':
+        algorithms = os.getenv('DSS_DEFAULT_HASH_ALGORITHMS', 'md5')
+    if ',' in algorithms:
+        hashes = algorithms.split(',')
+    else:
+        hashes = algorithms.split(';')
+    for name in hashes:
+        if not name in dSpecialHashes.keys() and not name in hashlib.algorithms_available:
+            print('Error: unknown hash algorithm: %s' % name)
+            print('Available hash algorithms: ' + ' '.join([name for name in list(hashlib.algorithms_available)] + list(dSpecialHashes.keys())))
+            return [], {}
+        elif name in dSpecialHashes.keys():
+            dHashes[name] = dSpecialHashes[name]()
+        else:
+            dHashes[name] = hashlib.new(name)
+
+    return hashes, dHashes
+
+def CalculateChosenHash(data):
+    hashes, dHashes = GetHashObjects('')
+    dHashes[hashes[0]].update(data)
+    return dHashes[hashes[0]].hexdigest(), hashes[0]
+
 def ExtraInfoMD5(data):
     if data == None:
         return ''
@@ -1198,7 +1366,7 @@ def ExtraInfoENTROPY(data):
         return ''
     dPrevalence = {iter: 0 for iter in range(0x100)}
     for char in data:
-        dPrevalence[ord(char)] += 1
+        dPrevalence[P23Ord(char)] += 1
     sumValues, entropy, countUniqueBytes, countNullByte, countControlBytes, countWhitespaceBytes, countPrintableBytes, countHighBytes = CalculateByteStatistics(dPrevalence)
     return '%f' % entropy
 
@@ -1210,7 +1378,7 @@ def ExtraInfoHEADHEX(data):
 def ExtraInfoHEADASCII(data):
     if data == None:
         return ''
-    return ''.join([IFF(ord(b) >= 32 and ord(b) < 128, b, '.') for b in data[:16]])
+    return ''.join([IFF(P23Ord(c) >= 32 and P23Ord(c) < 127, chr(P23Ord(c)), '.') for c in data[:16]])
 
 def ExtraInfoTAILHEX(data):
     if data == None:
@@ -1220,7 +1388,7 @@ def ExtraInfoTAILHEX(data):
 def ExtraInfoTAILASCII(data):
     if data == None:
         return ''
-    return ''.join([IFF(ord(b) >= 32 and ord(b) < 128, b, '.') for b in data[-16:]])
+    return ''.join([IFF(P23Ord(c) >= 32 and P23Ord(c) < 127, chr(P23Ord(c)), '.') for c in data[-16:]])
 
 def ExtraInfoHISTOGRAM(data):
     if data == None:
@@ -1340,7 +1508,7 @@ class cDump():
             if i % self.dumplinelength == self.dumplinelength / 2:
                 hexDump += ' '
             hexDump += ' %02X' % b
-            asciiDump += IFF(b >= 32 and b < 128, chr(b), '.')
+            asciiDump += IFF(b >= 32 and b < 127, chr(b), '.')
         if countRLE > 0:
             oDumpStream.Addline('* %d 0x%02x' % (countRLE, countRLE * self.dumplinelength))
         oDumpStream.Addline(self.CombineHexAscii(position + hexDump, asciiDump))
@@ -1458,18 +1626,31 @@ def ParseFormat(formatvalue):
     annotations = ''
     representation = ''
     remainder = False
-    tlv = None
+    special = None
     if formatvalue.startswith('name='):
         formatvalue, annotations = Library(formatvalue[5:])
-    if formatvalue.startswith('tlv='):
-        tlv = {}
-        for element in formatvalue[4:].split(','):
+    if formatvalue.startswith(KEYWORD_TLV + '='):
+        special = {KEYWORD_FORMAT: KEYWORD_TLV}
+        for element in formatvalue[len(KEYWORD_TLV + '='):].split(','):
             if element.startswith('f:'):
                 format = element[2:]
             elif element.startswith('t:'):
-                tlv['type'] = int(element[2:])
+                special[KEYWORD_TYPE] = int(element[2:])
             elif element.startswith('l:'):
-                tlv['length'] = int(element[2:])
+                special[KEYWORD_LENGTH] = int(element[2:])
+            elif element.startswith('s:'):
+                special[KEYWORD_SUFFIX] = element[2:]
+            else:
+                raise
+    elif formatvalue.startswith(KEYWORD_BITSTREAM + '='):
+        special = {KEYWORD_FORMAT: KEYWORD_BITSTREAM}
+        for element in formatvalue[len(KEYWORD_BITSTREAM + '='):].split(','):
+            if element.startswith('f:'):
+                format = element[2:]
+            elif element.startswith('b:'):
+                special[KEYWORD_BITS] = [int(number) for number in element[2:].split(';')]
+            elif element.startswith('j:'):
+                special[KEYWORD_JOIN] = element[2:]
             else:
                 raise
     else:
@@ -1482,7 +1663,7 @@ def ParseFormat(formatvalue):
             format = format[:-1]
             remainder = True
 
-    return SearchAndReplaceFormat(format), representation, annotations, remainder, tlv
+    return SearchAndReplaceFormat(format), representation, annotations, remainder, special
 
 def FindAll(data, sub):
     result = []
@@ -1505,7 +1686,7 @@ def ParseAnnotations(annotations, dAnnotations):
 def FormatBytesSingle(filename, cutexpression, content, options):
     MergeUserLibrary()
 
-    format, representation, annotations, remainder, tlv = ParseFormat(options.format)
+    format, representation, annotations, remainder, special = ParseFormat(options.format)
 
     dAnnotations = {}
     if options.annotations != '':
@@ -1516,7 +1697,7 @@ def FormatBytesSingle(filename, cutexpression, content, options):
     oBinaryFile = cBinaryFile(filename, C2BIP3(options.password), options.noextraction, options.literalfilenames, content)
     if cutexpression == '':
         if format != '':
-            if remainder or tlv != None:
+            if remainder or special != None:
                 data = oBinaryFile.read()
             else:
                 data = oBinaryFile.read(struct.calcsize(format))
@@ -1528,12 +1709,14 @@ def FormatBytesSingle(filename, cutexpression, content, options):
         data = CutData(oBinaryFile.read(), cutexpression)
     oBinaryFile.close()
 
-    if filename != '' and options.select == '':
+    dumpData = options.select.DoSelect or special != None and special[KEYWORD_FORMAT] == KEYWORD_BITSTREAM
+
+    if filename != '' and not dumpData:
         print('File: %s%s' % (filename, IFF(oBinaryFile.extracted, ' (extracted)', '')))
     if format == '' and options.find == '':
         print('s:signed u:unsigned l:little-endian b:big-endian m:mixed-endian')
     if format != '':
-        if options.select != '':
+        if dumpData:
             if options.dump:
                 DumpFunction = lambda x:x
                 IfWIN32SetBinary(sys.stdout)
@@ -1544,17 +1727,15 @@ def FormatBytesSingle(filename, cutexpression, content, options):
             else:
                 DumpFunction = HexAsciiDump
 
-        selectionCounter = 0
-        if tlv == None:
+        if special == None:
             size = struct.calcsize(format)
             for index, element in enumerate(struct.unpack(format, data[0:size])):
                 index += 1
-                if options.select != '':
-                    if options.select != 'r' and int(options.select) == index and (isinstance(element, str) or isinstance(element, bytes)):
+                if options.select.DoSelect:
+                    if (isinstance(element, str) or isinstance(element, bytes)) and options.select.Select(index):
                         StdoutWriteChunked(DumpFunction(element))
-                        selectionCounter += 1
                 else:
-                    if isinstance(element, int) or isinstance(element, long):
+                    if isinstance(element, int) or sys.version_info[0] == 2 and isinstance(element, long):
                         if representation == '':
                             line = '%2d: %15s %10d %10x  %s' % (index, type(element), element, element, IFF(element < 0, '', lambda: TimestampUTC(element)))
                         elif representation[index - 1] == 'X':
@@ -1571,18 +1752,45 @@ def FormatBytesSingle(filename, cutexpression, content, options):
                         elif representation != '' and representation[index - 1] == 'X':
                             line = '%2d: %15s %s' % (index, type(element), binascii.b2a_hex(element))
                         else:
-                            line = '%2d: %15s %10d %s %s %s %s' % (index, type(element), len(element), ExtraInfoHEADASCII(element[:10]), ExtraInfoHEADHEX(element[:10]), ExtraInfoENTROPY(element), ExtraInfoMD5(element))
+                            line = '%2d: %15s %10d %s %s %s %s' % (index, type(element), len(element), ExtraInfoHEADASCII(element[:10]), ExtraInfoHEADHEX(element[:10]), ExtraInfoENTROPY(element), CalculateChosenHash(element)[0])
                     elif isinstance(element, bytes):
-                        line = '%2d: %15s %10d %s %s %s %s' % (index, type(element), len(element), ExtraInfoHEADASCII3(element[:10]), ExtraInfoHEADHEX(element[:10]), ExtraInfoENTROPY(element), ExtraInfoMD5(element))
+                        line = '%2d: %15s %10d %s %s %s %s' % (index, type(element), len(element), ExtraInfoHEADASCII(element[:10]), ExtraInfoHEADHEX(element[:10]), ExtraInfoENTROPY(element), CalculateChosenHash(element)[0])
                     else:
                         line = '%2d: %15s %s' % (index, type(element), str(element))
                     print('%s %s' % (line, dAnnotations.get(index, '')))
-            if options.select == 'r' and remainder:
+            if remainder and options.select.Select('r'):
                 StdoutWriteChunked(DumpFunction(data[size:]))
-                selectionCounter += 1
-            if options.select == '' and remainder:
+            if not options.select.DoSelect and remainder:
                 print('Remainder: %d' % (len(data) - size))
                 remainderx100 = data[size:size + 0x100]
+                if len(remainderx100) > 0:
+                    oDump = cDump(remainderx100)
+                    print(oDump.HexAsciiDump())
+                    FormatBytesData(remainderx100, -1, options)
+        elif special[KEYWORD_FORMAT] == KEYWORD_TLV:
+            size = struct.calcsize(format)
+            if KEYWORD_SUFFIX in special:
+                sizeSuffix = struct.calcsize(special[KEYWORD_SUFFIX])
+            else:
+                sizeSuffix = 0
+            index = 0
+            while len(data) >= size:
+                index += 1
+                fields = struct.unpack(format, data[0:size])
+                data = data[size:]
+                value = data[:fields[special[KEYWORD_LENGTH]]]
+                data = data[fields[special[KEYWORD_LENGTH]] + sizeSuffix:]
+                if options.select.DoSelect:
+                    if options.select.Select(index):
+                        StdoutWriteChunked(DumpFunction(value))
+                else:
+                    line = '%2d: %8s %5d %s' % (index, NumberToHex(fields[special[KEYWORD_TYPE]]), fields[special[KEYWORD_LENGTH]], repr(value)[0:40])
+                    print(line)
+            if len(data) > 0 and options.select.Select('r'):
+                StdoutWriteChunked(DumpFunction(data))
+            if not options.select.DoSelect and len(data) > 0:
+                print('Remainder: %d' % (len(data)))
+                remainderx100 = data[:0x100]
                 if len(remainderx100) > 0:
                     oDump = cDump(remainderx100)
                     print(oDump.HexAsciiDump())
@@ -1590,32 +1798,49 @@ def FormatBytesSingle(filename, cutexpression, content, options):
         else:
             size = struct.calcsize(format)
             index = 0
-            while len(data) >= size:
+            bits = ''
+            oResult = DataIO()
+            if special[KEYWORD_JOIN] == '<':
+                joinLittleendian = True
+                outputBytes = True
+            elif special[KEYWORD_JOIN] == '>':
+                joinLittleendian = False
+                outputBytes = True
+            elif special[KEYWORD_JOIN] == 'b':
+                joinLittleendian = False
+                outputBytes = False
+            else:
+                raise
+            while len(data) - size * index >= size:
+                fields = struct.unpack(format, data[index * size:(index + 1) * size])
+                for bit in special[KEYWORD_BITS]:
+                    bitPattern = 2 ** bit
+                    if fields[0] & bitPattern == bitPattern:
+                        bit = '1'
+                    else:
+                        bit = '0'
+                    if joinLittleendian:
+                        bits = bit + bits
+                    else:
+                        bits = bits + bit
+                    if outputBytes and len(bits) == 8:
+                        oResult.write(C2BIP3(chr(int(bits, 2))))
+                        bits = ''
                 index += 1
-                fields = struct.unpack(format, data[0:size])
-                data = data[size:]
-                value = data[:fields[tlv['length']]]
-                data = data[fields[tlv['length']]:]
-                if options.select != '':
-                    if options.select != 'r' and int(options.select) == index:
-                        StdoutWriteChunked(DumpFunction(value))
-                        selectionCounter += 1
+            if outputBytes and len(bits) != 0:
+                padding = '0' * (8 - len(bits))
+                if joinLittleendian:
+                    bits = padding + bits
                 else:
-		                line = '%2d: %8s %5d %s' % (index, NumberToHex(fields[tlv['type']]), fields[tlv['length']], repr(value)[0:40])
-		                print(line)
-            if options.select == 'r' and len(data) > 0:
-                StdoutWriteChunked(DumpFunction(data))
-                selectionCounter += 1
-            if options.select == '' and len(data) > 0:
-                print('Remainder: %d' % (len(data)))
-                remainderx100 = data[:0x100]
-                if len(remainderx100) > 0:
-                    oDump = cDump(remainderx100)
-                    print(oDump.HexAsciiDump())
-                    FormatBytesData(remainderx100, -1, options)
+                    bits = bits + padding
+                oResult.write(C2BIP3(chr(int(bits, 2))))
+            if outputBytes:
+                StdoutWriteChunked(DumpFunction(oResult.getvalue()))
+            else:
+                StdoutWriteChunked(bits)
 
-        if options.select != '' and selectionCounter == 0:
-            print('Warning: no item was selected with expression %s' % options.select)
+        if options.select.DoSelect and options.select.selectionCounter == 0:
+            print('Warning: no item was selected with expression %s' % options.select.option)
     elif options.find != '':
         if not options.find.startswith('#i#'):
             raise Exception('Unknown find option format: %s' % options.find)
@@ -1641,6 +1866,29 @@ def FormatBytesSingle(filename, cutexpression, content, options):
 def FormatBytesFiles(fileList, options):
     for filename, cutexpression, content in fileList:
         FormatBytesSingle(filename, cutexpression, content, options)
+
+class cSelection(object):
+    def __init__(self, option):
+        self.option = option
+        self.selectionCounter = 0
+        if self.option == '':
+            self.selector = []
+            self.DoSelect = False
+        else:
+            self.DoSelect = True
+            if self.option == 'r':
+                self.selector = ['r']
+            elif '-' in self.option:
+                begin, end = self.option.split('-')
+                self.selector = list(range(int(begin), int(end) + 1))
+            else:
+                self.selector = [int(self.option)]
+
+    def Select(self, index):
+        result = index in self.selector
+        if result:
+            self.selectionCounter += 1
+        return result
 
 def Main():
     moredesc = '''
@@ -1672,6 +1920,7 @@ https://DidierStevens.com'''
         PrintManual()
         return
 
+    options.select = cSelection(options.select)
     fileList = GenerateFileList(args, options)
     if fileList != None:
         FormatBytesFiles(fileList, options)

@@ -4,8 +4,8 @@ from __future__ import print_function
 
 __description__ = 'Strings command in Python'
 __author__ = 'Didier Stevens'
-__version__ = '0.0.3'
-__date__ = '2018/12/01'
+__version__ = '0.0.5'
+__date__ = '2019/12/17'
 
 """
 Source code put in the public domain by Didier Stevens, no Copyright
@@ -25,6 +25,10 @@ History:
   2018/09/14: 0.0.3 added option -f
   2018/09/19: updated Quote
   2018/12/01: added ParseCutTerm, cDump, cOutput, manual, added #h# and #t# to cOutput
+  2018/12/12: 0.0.4 added option -T
+  2019/04/14: Quote bugfix
+  2019/08/05: bugfix #e#chr
+  2019/12/17: 0.0.5 added option -P
 
 Todo:
 """
@@ -77,6 +81,7 @@ A sequences has to be at least 4 characters long. This can be changed with optio
 
 Strings are outputed in the order they are found in the binary file (ASCII strings first, UNICODE strings second). Longer strings tend to be more interesting than short strings.
 Option -L sorts the strings by string length: shortest strings are outputed first and longest strings last.
+Long strings can be trimmed with option -T, for example -T 80, to trim strings to a maximum length of 80 characters. This is useful in combination with option -L, to avoid long strings taking up the whole screen.
 
 Identical strings can appear more than once in binary files. To output only the first occurence of strings that appear more than once, uce option -u.
 
@@ -93,6 +98,9 @@ Option -p excludes all import strings found in PE files (this requires module pe
 To exclude known strings from "goodware", i.e. not malware, use option -g with yarGEN's database.
 
 The selection of strings to output can be inverted with option -v.
+
+Option -P selects pascal strings. A pascal string is a string preceded by an integer with the number of characters in the string (a counter). Option -p takes a value that defines how to decode the counter, using the same syntax as the struct module.
+For example, to define the counter as a little-endian 32-bit unsigned integer, use '-P "<I"'. Use > for big-endian, B for 8-bit (byte) and H for 16-bit.
 
 Use option -f to prefix each string with the name of the file it was found it.
 
@@ -580,13 +588,13 @@ def Interpret(expression):
         elif functionname == FUNCTIONNAME_CHR:
             if CheckFunction(functionname, arguments, 1, 2):
                 return None
-            number = CheckNumber(arguments[0], minimum=1, maximum=255)
+            number = CheckNumber(arguments[0], minimum=0, maximum=255)
             if number == None:
                 return None
             if len(arguments) == 1:
                 decoded += chr(number)
             else:
-                number2 = CheckNumber(arguments[1], minimum=1, maximum=255)
+                number2 = CheckNumber(arguments[1], minimum=0, maximum=255)
                 if number2 == None:
                     return None
                 if number < number2:
@@ -1275,7 +1283,7 @@ def ToString(value):
 
 def Quote(value, separator, quote):
     value = ToString(value)
-    if value[0] == quote and value[-1] == quote:
+    if len(value) > 1 and value[0] == quote and value[-1] == quote:
         return value
     if separator in value or value == '':
         return quote + value + quote
@@ -1387,7 +1395,20 @@ def ExtractStringsASCII(data, options):
         regex = REGEX_WHITESPACE + '{%d,}'
     else:
         regex = REGEX_STANDARD + '{%d,}'
-    return re.findall(C2BIP3(regex % options.bytes), data)
+
+    if options.pascal == '':
+        return re.findall(C2BIP3(regex % options.bytes), data)
+    else:
+        structFormat = options.pascal
+        structFormatLength = struct.calcsize(structFormat)
+        foundStrings = []
+
+        for oMatch in re.finditer(C2BIP3(regex % options.bytes), data):
+            if oMatch.start(0) >= structFormatLength:
+                foundString = oMatch.group(0)
+                if struct.unpack(structFormat, data[oMatch.start(0) - structFormatLength:oMatch.start(0)])[0] == len(foundString):
+                    foundStrings.append(foundString)
+        return foundStrings
 
 def ExtractStringsUNICODE(data, options):
     if options.regex != '':
@@ -1396,7 +1417,21 @@ def ExtractStringsUNICODE(data, options):
         regex = '((' + REGEX_WHITESPACE + '\x00){%d,})'
     else:
         regex = '((' + REGEX_STANDARD + '\x00){%d,})'
-    return [foundunicodestring.replace(C2BIP3('\x00'), C2BIP3('')) for foundunicodestring, dummy in re.findall(C2BIP3(regex % options.bytes), data)]
+
+
+    if options.pascal == '':
+        return [foundunicodestring.replace(C2BIP3('\x00'), C2BIP3('')) for foundunicodestring, dummy in re.findall(C2BIP3(regex % options.bytes), data)]
+    else:
+        structFormat = options.pascal
+        structFormatLength = struct.calcsize(structFormat)
+        foundStrings = []
+
+        for oMatch in re.finditer(C2BIP3(regex % options.bytes), data):
+            if oMatch.start(0) >= structFormatLength:
+                foundString = oMatch.group(0).replace(C2BIP3('\x00'), C2BIP3(''))
+                if struct.unpack(structFormat, data[oMatch.start(0) - structFormatLength:oMatch.start(0)])[0] == len(foundString):
+                    foundStrings.append(foundString)
+        return foundStrings
 
 def ExtractStrings(data, options):
     if options.type == 'all':
@@ -1411,6 +1446,12 @@ def ExtractStrings(data, options):
 
 def ConsecutiveLettersLength(data):
     return max([0] + [len(letters) for letters in re.findall(C2BIP3(r'[a-z]+'), data, re.I)])
+
+def TrimIfRequired(string, maxLength):
+    if maxLength == 0:
+        return string
+    else:
+        return string[0:maxLength]
 
 def StringsSub(extractedString, filename, oOutput, dUnique, oExtraSensical, options):
     if options.casesensitive:
@@ -1434,9 +1475,9 @@ def StringsSub(extractedString, filename, oOutput, dUnique, oExtraSensical, opti
                     StdoutWriteChunked(extractedString)
             else:
                 if options.filename:
-                    oOutput.Line(DEFAULT_SEPARATOR.join([filename, extractedString.decode()]))
+                    oOutput.Line(DEFAULT_SEPARATOR.join([filename, TrimIfRequired(extractedString.decode(), options.trim)]))
                 else:
-                    oOutput.Line(extractedString.decode())
+                    oOutput.Line(TrimIfRequired(extractedString.decode(), options.trim))
 
 def Filter(extractedStrings, imported):
     if imported == [] or imported == None:
@@ -1566,6 +1607,8 @@ https://DidierStevens.com'''
     oParser.add_option('-p', '--pefile', action='store_true', default=False, help='Parse file as PE file and remove imported symbols')
     oParser.add_option('-g', '--goodwarestrings', action='store_true', default=False, help='Use the goodware strings db to filter out strings')
     oParser.add_option('-f', '--filename', action='store_true', default=False, help='Include filename (as prefix)')
+    oParser.add_option('-T', '--trim', type=int, default=0, help='Trim strings to given maximum length')
+    oParser.add_option('-P', '--pascal', default='', help='Counter format for pascal strings')
     oParser.add_option('--password', default='infected', help='The ZIP password to be used (default infected)')
     oParser.add_option('--noextraction', action='store_true', default=False, help='Do not extract from archive file')
     oParser.add_option('--literalfilenames', action='store_true', default=False, help='Do not interpret filenames')

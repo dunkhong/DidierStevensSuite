@@ -2,8 +2,8 @@
 
 __description__ = 'HTTP Heuristics plugin for oledump.py'
 __author__ = 'Didier Stevens'
-__version__ = '0.0.10'
-__date__ = '2018/10/13'
+__version__ = '0.0.12'
+__date__ = '2020/01/25'
 
 """
 
@@ -27,12 +27,16 @@ History:
   2015/04/01: 0.0.8 added PreProcess
   2016/12/11: 0.0.9 added iOffset loop
   2018/10/13: 0.0.10 changed XOR logic, added options (-e -k)
+  2019/11/05: 0.0.11 Python 3 support
+  2020/01/24: 0.0.12 added option -c
+  2020/01/25: Python 3 bugfix; deduping of result
 
 Todo:
 """
 
 import re
 import binascii
+import codecs
 
 def ReplaceFunction(match):
     try:
@@ -67,22 +71,23 @@ class cHTTPHeuristics(cPluginParent):
         self.stream = stream
         self.options = options
         self.ran = False
+        self.CheckFunction = StartsWithHTTP
 
     def Heuristics(self, data, noDecode=False):
-        if StartsWithHTTP(data):
+        if self.CheckFunction(data):
             return data
-        if StartsWithHTTP(data[::-1]):
+        if self.CheckFunction(data[::-1]):
             return data[::-1]
         if noDecode:
             return data
         try:
-            decoded = binascii.a2b_hex(data)
+            decoded = binascii.a2b_hex(data).decode()
             return self.Heuristics(decoded, True)
         except:
-            if not re.compile(r'^[0-9a-zA-Z/=]+$').match(data):
+            if not re.compile(r'^[0-9a-zA-Z/+=]+$').match(data):
                 return data
             try:
-                decoded = binascii.a2b_base64(data)
+                decoded = binascii.a2b_base64(data).decode()
                 return self.Heuristics(decoded, True)
             except:
                 return data
@@ -131,15 +136,15 @@ class cHTTPHeuristics(cPluginParent):
     def PreProcess(self):
         self.stream = re.sub(r'(\(\s*(\d+|\d+\.\d+)\s*[+*/-]\s*(\d+|\d+\.\d+)\s*\))', ReplaceFunction, self.streamOriginal)
 
-    def Analyze(self):
+    def AnalyzeSub(self):
         global keywords
 
-        self.ran = True
         self.PreProcess()
 
         oParser = optparse.OptionParser()
         oParser.add_option('-e', '--extended', action='store_true', default=False, help='Use extended keywords')
-        oParser.add_option('-k', '--keywords', type=str, default='', help='Provide keywords')
+        oParser.add_option('-k', '--keywords', type=str, default='', help='Provide keywords (separator is ,)')
+        oParser.add_option('-c', '--contains', action='store_true', default=False, help='Check if string contains keyword')
         (options, args) = oParser.parse_args(self.options.split(' '))
 
         if options.extended:
@@ -147,6 +152,9 @@ class cHTTPHeuristics(cPluginParent):
 
         if options.keywords != '':
             keywords = options.keywords.split(',')
+
+        if options.contains:
+            self.CheckFunction = ContainsHTTP
 
         result = []
 
@@ -157,7 +165,7 @@ class cHTTPHeuristics(cPluginParent):
             if chrString != '':
                 result.append(self.Heuristics(chrString))
 
-        oREHexBase64 = re.compile(r'"([0-9a-zA-Z/=]+)"')
+        oREHexBase64 = re.compile(r'"([0-9a-zA-Z/+=]+)"')
         for foundString in oREHexBase64.findall(self.stream):
             if foundString != '':
                     result.append(self.Heuristics(foundString))
@@ -167,13 +175,13 @@ class cHTTPHeuristics(cPluginParent):
             if foundString != '':
                     result.append(foundString)
 
-        resultHttp = [line for line in result if StartsWithHTTP(line)]
+        resultHttp = [line for line in result if self.CheckFunction(line)]
 
         if resultHttp == []:
-            resultHttp = [line for line in self.BruteforceDecode(result) if StartsWithHTTP(line)]
+            resultHttp = [line for line in self.BruteforceDecode(result) if self.CheckFunction(line)]
 
         if resultHttp == []:
-            resultHttp = [line.decode('rot13') for line in self.Strings() if ContainsHTTP(line.decode('rot13'))]
+            resultHttp = [codecs.encode(line, 'rot-13') for line in self.Strings() if ContainsHTTP(codecs.encode(line, 'rot-13'))]
         else:
             return resultHttp
 
@@ -186,5 +194,10 @@ class cHTTPHeuristics(cPluginParent):
             return result
         else:
             return resultHttp
+
+    def Analyze(self):
+        self.ran = True
+
+        return set(self.AnalyzeSub())
 
 AddPlugin(cHTTPHeuristics)

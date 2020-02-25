@@ -2,10 +2,10 @@
 
 from __future__ import print_function
 
-__description__ = "Template for text file processing"
+__description__ = 'Process PCAP files to calculate TCP data statistics'
 __author__ = 'Didier Stevens'
-__version__ = '0.0.2'
-__date__ = '2020/02/22'
+__version__ = '0.0.1'
+__date__ = '2019/09/24'
 
 """
 
@@ -24,8 +24,11 @@ History:
   2018/07/28: added options --begingrep, --begingrepoptions, --endgrep, and --endgrepoptions
   2018/09/18: added eta to progress
   2018/10/08: added %ru% to cOutput; added search and replace
-  2018/10/20: added eol to cOutput.Line
-  2020/02/22: 0.0.2 added option --context
+  2018/10/20: added eol to cOutput.Line; refactoring
+  2018/10/21: refactoring
+  2019/08/06: start from template
+  2019/09/21: added head field
+  2019/09/24: updated man
 
 Todo:
 """
@@ -38,50 +41,59 @@ import sys
 import textwrap
 import os
 import gzip
-import re
 import fnmatch
-import collections
+import dpkt
+import socket
+import struct
+import hashlib
+import string
+import math
+if sys.version_info[0] < 3:
+    import cPickle
+else:
+    import pickle as cPickle
+import atexit
+if sys.platform == 'win32' and sys.version_info[0] < 3:
+    import win_inet_pton
 from contextlib import contextmanager
+
+CSV_SEPARATOR = ';'
+ENTRY_HEAD = 'head'
+ENTRY_PREVALENCE = 'prevalence'
 
 def PrintManual():
     manual = '''
 Manual:
 
+This tool processes PCAP files to calculate statistics of TCP data.
+
+This Python script was developed with Python 2.7 and tested with Python 2.7 and 3.6.
+
+All TCP data is grouped by connection ID: the combination of source IP, source port, destination IP and destination port.
+The are 2 connection IDs per TCP connection: one per flow direction.
+
+This tool does not reassemble TCP streams: just takes TCP data in the order it it found inside the PCAP file(s).
+
+The output produced by this tool is a CSV file with header.
+The first field is the connection ID.
+The second field is the head: the first 4 byte of the data of the first packet.
+The third field is the size: the total amount of data bytes.
+The fourth field is the entropy: the total entropy of all data bytes.
+
+Example:
+
+ConnectionID;head;Size;Entropy
+192.168.10.10:50236-96.126.103.196:80;'GET ';364;5.42858024035
+192.168.10.10:50235-96.126.103.196:80;'GET ';426;5.46464090792
+96.126.103.196:80-192.168.10.10:50235;'HTTP';3308;6.06151478505
+96.126.103.196:80-192.168.10.10:50236;'HTTP';493;6.73520107812
+
+This tool can help identifying TCP connections that are not encrypted/encoded/compressed, as these connections will have a lower entropy.
+
+Output is to stdout by default, and can be redirected with option -o.
+
 Errors occuring when opening a file are reported (and logged if logging is turned on), and the program moves on to the next file.
 Errors occuring when reading & processing a file are reported (and logged if logging is turned on), and the program stops unless option ignoreprocessingerrors is used.
-
-Option --grep can be used to select (grep) lines that have to be processed.
-If this option is not used, all lines will be processed.
-To select particular lines to be processed, used option --grep and provide a regular expression. All lines matching this regular expression will be processed.
-You can also use a capture group in your regular expression. The line to be processed will become the content of the first capture group (and not the complete line).
-The regular expression matching operation is case sensitive. Use option --grepoptions i to make the matching operation case insensitive.
-Use option --grepoptions v to invert the selection.
-Use option --grepoptions F to match a fixed string in stead of a regular expression.
-
-Option --context can be used to select which lines have to be processed when a line is "grepped". If no context is provided, only "grepped" lines are processed.
-But if you want to process other lines, use option --context. The value for this option is a list of line numbers/ranges separated by a comma. The line numbers are relative to the "grepped" line.
-A number is negative, zero or positive integer. A range is 2 numbers separated by a dash (-).
-For example, line number -1 is the line right before the "grepped" line (0 is the "grepped" line itself).
-Example to select the line before a line containing "trigger" and the second line after the trigger line: --grep trigger --context -1,2
-
-Option --begingrep can be used to select the first line from which on lines have to be processed.
-If this option is not used, all lines will be processed.
-To select the first line to be processed, used option --begingrep and provide a regular expression. The line matching this regular expression and all following lines will be processed (depending on --grep and --endgrep).
-The regular expression matching operation is case sensitive. Use option --begingrepoptions i to make the matching operation case insensitive.
-Use option --begingrepoptions v to invert the selection.
-Use option --begingrepoptions F to match a fixed string in stead of a regular expression.
-
-Option --endgrep can be used to select the last line to be processed.
-If this option is not used, all lines will be processed.
-To select the last line to be processed, used option --endgrep and provide a regular expression. The line matching this regular expression will be the last line to be processed (depending on --grep).
-The regular expression matching operation is case sensitive. Use option --endgrepoptions i to make the matching operation case insensitive.
-Use option --endgrepoptions v to invert the selection.
-Use option --endgrepoptions F to match a fixed string in stead of a regular expression.
-
-When combining --begingrep and --endgrep, make sure that --endgrep does not match a line before --begingrep does.
-
-Options --search and --replace can be used to replace every occurence of option value --search in each line by option value --replace (can be an empty string).
---searchoptions are available too.
 
 The lines are written to standard output, except when option -o is used. When option -o is used, the lines are written to the filename specified by option -o.
 Filenames used with option -o starting with # have special meaning.
@@ -111,6 +123,13 @@ QUOTE = '"'
 def PrintError(*args, **kwargs):
     print(*args, file=sys.stderr, **kwargs)
 
+#Convert 2 Integer If Python 2
+def C2IIP2(data):
+    if sys.version_info[0] > 2:
+        return data
+    else:
+        return ord(data)
+
 #Convert 2 Bytes If Python 3
 def C2BIP3(string):
     if sys.version_info[0] > 2:
@@ -118,12 +137,12 @@ def C2BIP3(string):
     else:
         return string
 
-#Convert 2 Integer If Python 2
-def C2IIP2(data):
+#Convert 2 String If Python 3
+def C2SIP3(data):
     if sys.version_info[0] > 2:
-        return data
+        return data.decode('utf8')
     else:
-        return ord(data)
+        return data
 
 def File2Strings(filename):
     try:
@@ -160,6 +179,35 @@ def IFF(expression, valueTrue, valueFalse):
         return CIC(valueTrue)
     else:
         return CIC(valueFalse)
+
+def Serialize(object, filename=None):
+    try:
+        fPickle = open(filename, 'wb')
+    except:
+        return False
+    try:
+        cPickle.dump(object, fPickle, cPickle.HIGHEST_PROTOCOL)
+    except:
+        return False
+    finally:
+        fPickle.close()
+    return True
+
+def DeSerialize(filename=None):
+    if os.path.isfile(filename):
+        try:
+            fPickle = open(filename, 'rb')
+        except:
+            return None
+        try:
+            object = cPickle.load(fPickle)
+        except:
+            return None
+        finally:
+            fPickle.close()
+        return object
+    else:
+        return None
 
 class cVariables():
     def __init__(self, variablesstring='', separator=DEFAULT_SEPARATOR):
@@ -421,148 +469,6 @@ class cLogfile():
             self.Line('Finish', '%d error(s)' % self.errors, '%d second(s)' % (time.time() - self.starttime))
             self.oOutput.Close()
 
-class cGrep():
-    def __init__(self, expression, options):
-        self.expression = expression
-        self.options = options
-        if self.expression == '' and self.options != '':
-            raise Exception('Option --grepoptions can not be used without option --grep')
-        self.dogrep = self.expression != ''
-        self.oRE = None
-        self.invert = False
-        self.caseinsensitive = False
-        self.fixedstring = False
-        if self.dogrep:
-            flags = 0
-            for option in self.options:
-                if option == 'i':
-                    flags = re.IGNORECASE
-                    self.caseinsensitive = True
-                elif option == 'v':
-                    self.invert = True
-                elif option == 'F':
-                    self.fixedstring = True
-                else:
-                    raise Exception('Unknown grep option: %s' % option)
-            self.oRE = re.compile(self.expression, flags)
-
-    def Grep(self, line):
-        if self.fixedstring:
-            if self.caseinsensitive:
-                found = self.expression.lower() in line.lower()
-            else:
-                found = self.expression in line
-            if self.invert:
-                return not found, line
-            else:
-                return found, line
-        else:
-            oMatch = self.oRE.search(line)
-            if self.invert:
-                return oMatch == None, line
-            if oMatch != None and len(oMatch.groups()) > 0:
-                line = oMatch.groups()[0]
-            return oMatch != None, line
-
-def SearchAndReplace(line, search, replace, searchoptions):
-    return line.replace(search, replace)
-
-def ProcessFileWithoutContext(fIn, oBeginGrep, oGrep, oEndGrep, options, fullread):
-    if fIn == None:
-        return
-
-    begin = oBeginGrep == None or not oBeginGrep.dogrep
-    end = False
-    returnendline = False
-    if fullread:
-        yield fIn.read()
-    else:
-        for line in fIn:
-            line = line.rstrip('\n\r')
-            if not begin:
-                begin, line = oBeginGrep.Grep(line)
-            if not begin:
-                continue
-            if not end and oEndGrep != None and oEndGrep.dogrep:
-                end, line = oEndGrep.Grep(line)
-                if end:
-                    returnendline = True
-            if end and not returnendline:
-                continue
-            selected = True
-            if oGrep != None and oGrep.dogrep:
-                selected, line = oGrep.Grep(line)
-            if not selected:
-                continue
-            if end and returnendline:
-                returnendline = False
-            if options.search != '':
-                line = SearchAndReplace(line, options.search, options.replace, options.searchoptions)
-            yield line
-
-def ProcessFileWithContext(fIn, oBeginGrep, oGrep, oEndGrep, context, options, fullread):
-    if fIn == None:
-        return
-
-    begin = oBeginGrep == None or not oBeginGrep.dogrep
-    end = False
-    returnendline = False
-    lineCounter = 0
-    if len(context) >= 2:
-        queueSize = context[1] - context[0] + 1
-    elif context[0] < 0:
-        queueSize = 0 - context[0] + 1
-    else:
-        queueSize = context[0] - 0 + 1
-    queue = collections.deque([[-1, ''] for i in range(0, queueSize)])
-    lineNumbers = []
-
-    if fullread:
-        yield fIn.read()
-    else:
-        for line in fIn:
-            lineCounter += 1
-            line = line.rstrip('\n\r')
-            if not begin:
-                begin, line = oBeginGrep.Grep(line)
-            if not begin:
-                continue
-            if not end and oEndGrep != None and oEndGrep.dogrep:
-                end, line = oEndGrep.Grep(line)
-                if end:
-                    returnendline = True
-            if end and not returnendline:
-                continue
-            queue.popleft()
-            queue.append([lineCounter, line])
-            selected, line = oGrep.Grep(line)
-            if selected:
-                lineNumbers = sorted(set(lineNumbers + [lineCounter + offset for offset in context]))
-            if lineNumbers == []:
-                continue
-            else:
-                for lineKey, lineValue in queue:
-                    if lineNumbers[0] == lineKey:
-                        line = lineValue
-                        lineNumbers = lineNumbers[1:]
-                        break
-            if end and returnendline:
-                returnendline = False
-            if options.search != '':
-                line = SearchAndReplace(line, options.search, options.replace, options.searchoptions)
-            yield line
-        for line in lineNumbers:
-            for lineKey, lineValue in queue:
-                if line == lineKey:
-                    yield lineValue
-                    break
-
-def ProcessFile(fIn, oBeginGrep, oGrep, oEndGrep, context, options, fullread):
-    if oGrep != None and context != []:
-        return ProcessFileWithContext(fIn, oBeginGrep, oGrep, oEndGrep, context, options, fullread)
-    else:
-        return ProcessFileWithoutContext(fIn, oBeginGrep, oGrep, oEndGrep, options, fullread)
-
 def AnalyzeFileError(filename):
     PrintError('Error opening file %s' % filename)
     PrintError(sys.exc_info()[1])
@@ -577,7 +483,7 @@ def AnalyzeFileError(filename):
         pass
 
 @contextmanager
-def TextFile(filename, oLogfile):
+def PcapFile(filename, oLogfile):
     if filename == '':
         fIn = sys.stdin
     elif os.path.splitext(filename)[1].lower() == '.gz':
@@ -589,7 +495,7 @@ def TextFile(filename, oLogfile):
             fIn = None
     else:
         try:
-            fIn = open(filename, 'r')
+            fIn = open(filename, 'rb')
         except:
             AnalyzeFileError(filename)
             oLogfile.LineError('Opening file %s %s' % (filename, repr(sys.exc_info()[1])))
@@ -606,15 +512,78 @@ def TextFile(filename, oLogfile):
         if fIn != sys.stdin:
             fIn.close()
 
-def ProcessTextFile(filename, oBeginGrep, oGrep, oEndGrep, context, oOutput, oLogfile, options):
-    with TextFile(filename, oLogfile) as fIn:
+def IP2String(address):
+    try:
+        return socket.inet_ntop(socket.AF_INET, address)
+    except ValueError:
+        return socket.inet_ntop(socket.AF_INET6, address)
+
+def CalculateByteStatistics(dPrevalence):
+    sumValues = sum(dPrevalence.values())
+    countNullByte = dPrevalence[0]
+    countControlBytes = 0
+    countWhitespaceBytes = 0
+    for iter in range(1, 0x21):
+        if chr(iter) in string.whitespace:
+            countWhitespaceBytes += dPrevalence[iter]
+        else:
+            countControlBytes += dPrevalence[iter]
+    countControlBytes += dPrevalence[0x7F]
+    countPrintableBytes = 0
+    for iter in range(0x21, 0x7F):
+        countPrintableBytes += dPrevalence[iter]
+    countHighBytes = 0
+    for iter in range(0x80, 0x100):
+        countHighBytes += dPrevalence[iter]
+    entropy = 0.0
+    for iter in range(0x100):
+        if dPrevalence[iter] > 0:
+            prevalence = float(dPrevalence[iter]) / float(sumValues)
+            entropy += - prevalence * math.log(prevalence, 2)
+    return sumValues, entropy, countNullByte, countControlBytes, countWhitespaceBytes, countPrintableBytes, countHighBytes
+
+def ProcessPcapFile(filename, dConnections, oOutput, oLogfile, options):
+    with PcapFile(filename, oLogfile) as fIn:
         try:
-            for line in ProcessFile(fIn, oBeginGrep, oGrep, oEndGrep, context, options, False):
+            for timestamp, buffer in dpkt.pcap.Reader(fIn):
                 # ----- Put your line processing code here -----
-                oOutput.Line(line)
+                try:
+                    frame = dpkt.ethernet.Ethernet(buffer)
+                except KeyboardInterrupt:
+                    raise
+                except:
+                    continue
+
+                if not isinstance(frame.data, dpkt.ip.IP) or not isinstance(frame.data.data, dpkt.tcp.TCP):
+                    continue
+                ipPacket = frame.data
+                tcpPacket = ipPacket.data
+
+#                if tcpPacket.sport < tcpPacket.dport:
+#                    connectionid = '%s:%d-%s:%d' % (IP2String(ipPacket.src), tcpPacket.sport, IP2String(ipPacket.dst), tcpPacket.dport)
+#                else:
+#                    connectionid = '%s:%d-%s:%d' % (IP2String(ipPacket.dst), tcpPacket.dport, IP2String(ipPacket.src), tcpPacket.sport)
+
+                connectionid = '%s:%d-%s:%d' % (IP2String(ipPacket.src), tcpPacket.sport, IP2String(ipPacket.dst), tcpPacket.dport)
+
+                if not connectionid in dConnections:
+                    dConnections[connectionid] = {ENTRY_HEAD: b'', ENTRY_PREVALENCE: {iter: 0 for iter in range(0x100)}}
+
+                if sys.version_info[0] < 3:
+                    for char in tcpPacket.data:
+                        dConnections[connectionid][ENTRY_PREVALENCE][ord(char)] += 1
+                        if len(dConnections[connectionid][ENTRY_HEAD]) < 4:
+                            dConnections[connectionid][ENTRY_HEAD] += char
+                else:
+                    for byte in tcpPacket.data:
+                        dConnections[connectionid][ENTRY_PREVALENCE][byte] += 1
+                        if len(dConnections[connectionid][ENTRY_HEAD]) < 4:
+                            dConnections[connectionid][ENTRY_HEAD] += bytes([byte])
                 # ----------------------------------------------
         except:
             oLogfile.LineError('Processing file %s %s' % (filename, repr(sys.exc_info()[1])))
+            if sys.exc_info()[0] == KeyboardInterrupt:
+                raise
             if not options.ignoreprocessingerrors:
                 raise
             if sys.version_info[0] < 3:
@@ -626,54 +595,32 @@ def InstantiateCOutput(options):
         filenameOption = options.output
     return cOutput(filenameOption)
 
-def ParseNumber(number):
-    negative = 1
-    if number[0] == '-':
-        negative = -1
-        number = number[1:]
-    elif number[0] == '+':
-        number = number[1:]
-    digits = ''
-    while len(number) > 0 and number[0] >= '0' and number[0] <= '9':
-        digits += number[0]
-        number = number[1:]
-    return negative * int(digits), number
+def ProcessPcapFiles(filenames, oLogfile, options):
+    dConnections = {}
 
-def ParseTerm(term):
-    start, remainder = ParseNumber(term)
-    if len(remainder) == 0:
-        return [start]
-    if remainder[0] == '-':
-        remainder = remainder[1:]
-        stop, remainder = ParseNumber(remainder)
-        if len(remainder) > 0:
-            raise Exception('Error parsing term: ' + term)
-        return list(range(start, stop + 1))
+    if options.processedfilesdb != None:
+        data = DeSerialize(options.processedfilesdb)
+        if data == None:
+            dProcessedFiles = {}
+        else:
+            dProcessedFiles = data[0]
+        atexit.register(Serialize, [dProcessedFiles], options.processedfilesdb)
     else:
-        raise Exception('Error parsing term: ' + term)
+        dProcessedFiles = {}
 
-def ParseContext(context):
-    lines = []
-    for term in context.replace(' ', '').split(','):
-        lines += ParseTerm(term)
-    return sorted(set(lines))
-
-def ProcessTextFiles(filenames, oLogfile, options):
-    oGrep = cGrep(options.grep, options.grepoptions)
-    oBeginGrep = cGrep(options.begingrep, options.begingrepoptions)
-    oEndGrep = cGrep(options.endgrep, options.endgrepoptions)
     oOutput = InstantiateCOutput(options)
-    if oGrep == None or not oGrep.dogrep:
-        context = []
-    elif options.context == '':
-        context = []
-    else:
-        context = ParseContext(options.context)
 
     for index, filename in enumerate(filenames):
-        oOutput.Filename(filename, index, len(filenames))
-        ProcessTextFile(filename, oBeginGrep, oGrep, oEndGrep, context, oOutput, oLogfile, options)
+        if not filename in dProcessedFiles:
+            oOutput.Filename(filename, index, len(filenames))
+            ProcessPcapFile(filename, dConnections, oOutput, oLogfile, options)
+            dProcessedFiles[filename] = time.time()
 
+    oOutput.Line(MakeCSVLine(['ConnectionID', ENTRY_HEAD, 'Size', 'Entropy'], CSV_SEPARATOR, QUOTE))
+    for connectionid, dValues in dConnections.items():
+        sumValues, entropy, countNullByte, countControlBytes, countWhitespaceBytes, countPrintableBytes, countHighBytes = CalculateByteStatistics(dValues[ENTRY_PREVALENCE])
+        oOutput.Line(MakeCSVLine([connectionid, repr(dValues[ENTRY_HEAD]), sumValues, entropy], CSV_SEPARATOR, QUOTE))
+    
     oOutput.Close()
 
 def Main():
@@ -690,19 +637,10 @@ https://DidierStevens.com'''
     oParser = optparse.OptionParser(usage='usage: %prog [options] [[@]file ...]\n' + __description__ + moredesc, version='%prog ' + __version__)
     oParser.add_option('-m', '--man', action='store_true', default=False, help='Print manual')
     oParser.add_option('-o', '--output', type=str, default='', help='Output to file (# supported)')
-    oParser.add_option('--grep', type=str, default='', help='Grep expression')
-    oParser.add_option('--grepoptions', type=str, default='', help='grep options (ivF)')
-    oParser.add_option('--context', type=str, default='', help='Grep context (lines to select)')
-    oParser.add_option('--begingrep', type=str, default='', help='Grep expression for begin line')
-    oParser.add_option('--begingrepoptions', type=str, default='', help='begingrep options (ivF)')
-    oParser.add_option('--endgrep', type=str, default='', help='Grep expression for end line')
-    oParser.add_option('--endgrepoptions', type=str, default='', help='endgrep options (ivF)')
-    oParser.add_option('--search', type=str, default='', help='Search term (search and replace)')
-    oParser.add_option('--replace', type=str, default='', help='Replace term (search and replace)')
-    oParser.add_option('--searchoptions', type=str, default='', help='Search options (search and replace)')
     oParser.add_option('--literalfilenames', action='store_true', default=False, help='Do not interpret filenames')
     oParser.add_option('--recursedir', action='store_true', default=False, help='Recurse directories (wildcards and here files (@...) allowed)')
     oParser.add_option('--checkfilenames', action='store_true', default=False, help='Perform check if files exist prior to file processing')
+    oParser.add_option('-p', '--processedfilesdb', default=None, help='File database (pickle) of processed files')
     oParser.add_option('--logfile', type=str, default='', help='Create logfile with given keyword')
     oParser.add_option('--logcomment', type=str, default='', help='A string with comments to be included in the log file')
     oParser.add_option('--ignoreprocessingerrors', action='store_true', default=False, help='Ignore errors during file processing')
@@ -723,7 +661,7 @@ https://DidierStevens.com'''
         PrintError(oExpandFilenameArguments.message)
         oLogfile.Line('Warning', repr(oExpandFilenameArguments.message))
 
-    ProcessTextFiles(oExpandFilenameArguments.Filenames(), oLogfile, options)
+    ProcessPcapFiles(oExpandFilenameArguments.Filenames(), oLogfile, options)
 
     if oLogfile.errors > 0:
         PrintError('Number of errors: %d' % oLogfile.errors)
